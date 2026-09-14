@@ -29,11 +29,11 @@ class Dynamic:
         self.delta_t = delta_t
 
     def step(self, xt: Union[MX, ndarray], ut: Union[MX, ndarray]) -> Union[MX, ndarray]: # run one step
-        pt, vt = xt
+        pt, vt = xt[0, 0], ut[0, 0]
         pt_next = pt + self.delta_t*vt
         vt_next = vt + self.delta_t*(ut-0.1*vt**3)
         # Result Dimension: (2, 1)
-        return ca.vertcat(pt_next, vt_next) if isinstance(xt, MX) else np.concat([pt_next.reshape(-1, 1), vt_next.reshape(-1, 1)])
+        return ca.vertcat(pt_next, vt_next) if isinstance(xt, MX) else np.concat([pt_next.reshape(-1, 1), vt_next.reshape(-1, 1)], axis=0)
     
 class MPC:
     def __init__(self, verbose: int = 1):
@@ -67,17 +67,17 @@ class MPC:
         opts = {'ipopt.print_level': 0, 'print_time': 0}
         self._opti.solver('ipopt', opts)
 
-    def solve(self, x0: ndarray, xref: ndarray, total_step: int=100) -> ndarray:
+    def solve(self, x0: ndarray, xref: ndarray, total_step: int=50) -> ndarray:
         '''
         Args:
             x0: current state, (nx, 1)
             xref: reference state, (nx, 1)
             total_step: total step of iteration, int
-        Output:
-            xs: sequence of state, (nx, T+1)
+        Outputs:
+            xs: sequence of states, (nx, total_step+1)
         '''
-        xs = np.zeros(self._nx, self._T+1)
-        xt = x0.copy(); xs[:, 0] = x0.copy()
+        xs = np.zeros([self._nx, total_step+1])
+        xt = x0.copy(); xs[:, 0] = x0.flatten()
         for i in range(total_step):
             self._opti.set_value(self.X0, xt)
             self._opti.set_value(self.XRef, xref)
@@ -86,16 +86,16 @@ class MPC:
             self._opti.set_initial(self.U, np.zeros([self._nu, self._T]))
             sol = self._opti.solve()
             x_opt, u_opt = self._opti.value(self.X), self._opti.value(self.U)
-            u0 = u_opt[:, 0]
+            u0 = u_opt[0].reshape(-1, 1)
             xt = self._dynamic.step(xt, u0)
 
-            xs[:, i+1] = xt
+            xs[:, i+1] = xt.flatten()
             if self._verbose: print(f'step: {i+1} | state: {xt} | control: {u0}')
         return xs
 
     def plot(self, xs: ndarray):
         fig, ax = plt.subplots(figsize=(10, 6))
-        ax.plot(xs, marker='x', color='k', markerfacecolor='r')
+        ax.plot(xs[0, :], xs[1, :], marker='x', color='k', markerfacecolor='r')
         ax.set_xlabel('p'); ax.set_ylabel('v')
         plt.show()
 
