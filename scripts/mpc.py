@@ -29,7 +29,7 @@ class Dynamic:
         self.delta_t = delta_t
 
     def step(self, xt: Union[MX, ndarray], ut: Union[MX, ndarray]) -> Union[MX, ndarray]: # run one step
-        pt, vt = xt[0, 0], ut[0, 0]
+        pt, vt = xt[0, 0], xt[1, 0]
         pt_next = pt + self.delta_t*vt
         vt_next = vt + self.delta_t*(ut-0.1*vt**3)
         # Result Dimension: (2, 1)
