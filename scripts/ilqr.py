@@ -121,13 +121,14 @@ class iLQR:
             
             _x = np.zeros_like(x); _x[:, 0] = x0.flatten()
             _u = np.zeros_like(u)
-            j  = 0
-            while (self._cost.get_cost(_x, _u, xref.flatten()) >= self._cost.get_cost(x, u, xref.flatten())) and (j <= self._line_search_max_num):
-                for t in range(self._T-1):
-                    _u[:, t] = u[:, t] + alpha*ks[:, t] + (K @ (_x[:, t] - x[:, t]).reshape(-1, 1)).flatten()
+            for j in range(self._line_search_max_num+1):
+                for t in range(self._T):
+                    _u[:, t] = u[:, t] + alpha*ks[:, t] + (Ks[:, :, t] @ (_x[:, t] - x[:, t]).reshape(-1, 1)).flatten()
                     _x[:, t+1] = self._dynamic.step(_x[:, t], _u[:, t]).flatten()
-                alpha *= self._decay
-                j += 1
+                
+                if self._cost.get_cost(_x, _u, xref.flatten()) < self._cost.get_cost(x, u, xref.flatten()):
+                    x = _x.copy(); u = _u.copy()
+                    break
         return _x, _u
 
     def solve(self, x0: ndarray, xref: ndarray, total_step: int=50) -> ndarray:
@@ -144,7 +145,7 @@ class iLQR:
         for i in range(total_step):
             _x, _u = self.step(xt, xref)
             u0 = _u[:, 0]
-            xt = self._dynamic.step(xt, u0)
+            xt = self._dynamic.step(xt[:, 0], u0)
             xs[:, i+1] = xt.flatten()
         return xs
 
@@ -153,7 +154,6 @@ class iLQR:
         ax.plot(xs[0, :], xs[1, :], marker='x', color='k', markerfacecolor='r')
         ax.set_xlabel('p'); ax.set_ylabel('v')
         plt.show()
-            
 
 
 if __name__ == '__main__':
