@@ -121,14 +121,13 @@ class iLQR:
             
             _x = np.zeros_like(x); _x[:, 0] = x0.flatten()
             _u = np.zeros_like(u)
-            for j in range(self._line_search_max_num+1):
-                for t in range(self._T):
-                    _u[:, t] = u[:, t] + alpha*ks[:, t] + (Ks[:, :, t] @ (_x[:, t] - x[:, t]).reshape(-1, 1)).flatten()
+            j  = 0
+            while (self._cost.get_cost(_x, _u, xref.flatten()) >= self._cost.get_cost(x, u, xref.flatten())) and (j <= self._line_search_max_num):
+                for t in range(self._T-1):
+                    _u[:, t] = u[:, t] + alpha*ks[:, t] + (K @ (_x[:, t] - x[:, t]).reshape(-1, 1)).flatten()
                     _x[:, t+1] = self._dynamic.step(_x[:, t], _u[:, t]).flatten()
-                
-                if self._cost.get_cost(_x, _u, xref.flatten()) < self._cost.get_cost(x, u, xref.flatten()):
-                    x = _x.copy(); u = _u.copy()
-                    break
+                alpha *= self._decay
+                j += 1
         return _x, _u
 
     def solve(self, x0: ndarray, xref: ndarray, total_step: int=50) -> ndarray:
