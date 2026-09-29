@@ -8,6 +8,7 @@ dependencies = [
     "casadi>=3.8.0",
     "matplotlib>=3.11.2",
     "numpy>2",
+    "qpth",
     "torch",
 ]
 
@@ -20,3 +21,9 @@ build-backend = "uv_build"
 
 [tool.uv.sources]
 torch = { path = "../pytorch-whl/torch-2.11.0+cu128-cp311-cp311-manylinux_2_28_x86_64.whl" }
+qpth = { workspace = true }
+
+[tool.uv.workspace]
+members = [
+    "thirdparty/qpth",
+]
