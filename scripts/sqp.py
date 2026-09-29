@@ -24,9 +24,9 @@ class Cost:
         pref, vref = xref[0], xref[1]
         if order == 0: # raw function
             return 1/2*(pt-pref)**2 + 1/2*(vt-vref)**2 + 0.05*ut**2 + 0.02*(pt-pref)**4
-        elif order == 1: # 1-order
+        elif order == 1: # (3, 1)
             return self._func(xt)([[(pt-pref)+0.08*(pt-pref)**3], [vt-vref], [0.1*ut]])
-        elif order == 2: # 2-order
+        elif order == 2: # (3, 3)
             return self._func(xt)([
                 [1+0.24*(pt-pref)**2, 0, 0],
                 [0                  , 1, 0],
@@ -38,9 +38,9 @@ class Cost:
         pref, vref = xref[0], xref[1]
         if order == 0:
             return 5*(pt-pref)**2 + 5*(vt-vref)**2 + 0.5*(pt-pref)**4
-        elif order == 1:
+        elif order == 1: # (2, 1)
             return self._func(xt)([[10*(pt-pref) + 2*(pt-pref)**3], [10*(vt-vref)]])
-        elif order == 2:
+        elif order == 2: # (2, 2)
             return self._func(xt)([
                 [10 + 6*(pt-pref)**2, 0],
                 [0                  , 10]
@@ -56,8 +56,8 @@ class Dynamic:
 
     def step(self, xt: Union[DM, ndarray], ut: Union[DM, ndarray], order: int=0) -> Union[DM, ndarray]:
         pt, vt, ut = xt[0], xt[1], ut[0]
-        if order == 0:
-            return self._func(xt)([[pt+self.delta_t*vt], [vt+self.delta_t*(ut-0.1*vt**3)]]) # (2, 1)
+        if order == 0: # (2, 1)
+            return self._func(xt)([[pt+self.delta_t*vt], [vt+self.delta_t*(ut-0.1*vt**3)]])
         elif order == 1:
             return self._func(xt)([ # (2, 3)
                 [1.0, self.delta_t, 0.0],
@@ -109,6 +109,8 @@ class SQP:
             var_nums: int = self._T*self._ntau+self._nx
             J: ndarray = np.zeros(var_nums, 1)
             H: ndarray = np.zeros([var_nums, var_nums])
+            Jh: ndarray = np.zeros([(self._T+1)*self._nx, (self._T+1)*self._ntau])
+            h: ndarray = np.zeros(self._nx, 1)
 
             # get Jacobian Vector
             for t in range(self._T+1):
@@ -127,4 +129,18 @@ class SQP:
                     H[t*self._ntau: t*self._ntau+self._nx, t*self._ntau: t*self._ntau+self._nx] = self._cost.get_terminal_cost(x[:, t], xref.flatten(), order=2)
 
             # get Jacobian Matrix for equation
+            c = np.concatenate([np.eye(self._nx), np.zeros([self._nx, self._nu])], axis=1) # (ntau, nx)
+            for t in range(self._T+1):
+                Jh[t*self._nx: (t+1)*self._nx, t*self._ntau: (t+1)*self._ntau] = c.T
+                if t < self._T:
+                    Jh[(t+1)*self._nx: (t+2)*self._nx, t*self._ntau: (t+1)*self._ntau] = self._dynamic.step(x[:, t], u[:, t], order=1)
+
+            # get equation Vector
+            for t in range(self._T+1):
+                if t == 0:
+                    _dym_term = x0
+                else:
+                    _dym_term = self._dynamic.step(x[:, t-1], u[:, t-1])
+                h[t, :] = _dym_term - x[:, t]
             
+                

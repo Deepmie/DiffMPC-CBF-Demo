@@ -3,12 +3,11 @@ name = "diffmpc-cbf"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.12"
 dependencies = [
     "casadi>=3.8.0",
     "matplotlib>=3.11.2",
     "numpy<2",
-    "qpth>=0.0.18",
     "torch",
 ]
 
