@@ -61,11 +61,21 @@ class Dynamic:
         elif order == 1:
             return self._func(xt)([ # (2, 3)
                 [1.0, self.delta_t, 0.0],
-                [0.0, 1-0.03*vt**2, self.delta_t]
+                [0.0, 1-0.3*self.delta_t*vt**2, self.delta_t]
+            ])
+        elif order == 2:
+            return self._func(xt)([ # (2, 3, 3)
+                [[0, 0, 0],
+                 [0, 0, 0],
+                 [0, 0, 0]],
+                [[0, 0, 0],
+                 [0, -0.6*self.delta_t*vt, 0],
+                 [0, 0, 0]]
             ])
 
     def _func(self, xt: Union[DM, ndarray]):
         return ca.DM if isinstance(xt, DM) else np.array
+
 
 
 class SQP:
@@ -79,17 +89,18 @@ class SQP:
         self._cost    = Cost(self._nx, self._nu, self._T)
         self._dynamic = Dynamic(self._delta_t)
 
-    def _step(self, x0: ndarray, xref: ndarray, nu: ndarray, iter_nums: int):
+    def _step(self, x0: ndarray, xref: ndarray, dveq0: ndarray, iter_nums: int):
         '''
         Args:
             x0: current state, (nx, 1)
             xref: reference state, (nx, 1)
-            nu: dual-varable 
+            dveq0: dual-varable for equation, (nx*T, 1)
         Outputs:
             xs: sequence of states, (nx, total_step+1)
         '''
         x = np.zeros([self._nx, self._T+1]); x[:, 0] = x0.flatten()
         u = np.zeros([self._nu, self._T])
+        dveq = dveq0.copy()
         for t in range(self._T-1):
             x[:, t+1] = self._dynamic.step(x[:, t], u[:, t]).flatten()
 
@@ -110,8 +121,10 @@ class SQP:
             for t in range(self._T+1):
                 if t < self._T:
                     H[t*self._ntau: (t+1)*self._ntau, t*self._ntau: (t+1)*self._ntau] = \
-                    self._cost.get_stage_cost(x[:, t], u[:, t], xref.flatten(), order=2) + 
+                    self._cost.get_stage_cost(x[:, t], u[:, t], xref.flatten(), order=2) + \
+                    (dveq[t*self._nx: (t+1)*self._nx].reshape(-1, 1, 1) * self._dynamic.step(x[:, t], u[:, t], order=2)).sum(axis=0)
                 elif t == self._T:
                     H[t*self._ntau: t*self._ntau+self._nx, t*self._ntau: t*self._ntau+self._nx] = self._cost.get_terminal_cost(x[:, t], xref.flatten(), order=2)
 
-            # get 
+            # get Jacobian Matrix for equation
+            
