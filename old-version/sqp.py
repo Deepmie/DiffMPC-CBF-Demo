@@ -5,7 +5,7 @@ from torch import Tensor
 from typing import List, Optional, Union, Callable, Any
 import matplotlib.pyplot as plt
 from qpth.qp import QPFunction
-from ..type import Tau
+from .type import Tau
 
 class Cost:
     def __init__(self, nx: int, nu: int, T: int):
