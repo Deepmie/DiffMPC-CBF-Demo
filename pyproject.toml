@@ -21,7 +21,7 @@ build-backend = "uv_build"
 
 [tool.uv.sources]
 torch = { path = "../pytorch-whl/torch-2.11.0+cu128-cp311-cp311-manylinux_2_28_x86_64.whl" }
-qpth = { workspace = true }
+qpth = { workspace = true, editable = true }
 
 [tool.uv.workspace]
 members = [
