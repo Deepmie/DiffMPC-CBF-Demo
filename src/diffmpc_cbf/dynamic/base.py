@@ -8,6 +8,6 @@ class Dynamic(ABC):
         pass
 
     @abstractmethod
-    def step(self, ipt: Tuple[ndarray], order: int=0):
+    def step(self, ipt: Tuple[ndarray], order: int=0) -> ndarray:
         if len(ipt) == 1: ipt = (ipt[:self._nx], ipt[self._nx:])
     
