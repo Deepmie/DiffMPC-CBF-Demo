@@ -25,7 +25,10 @@ def lqr_step_solve(
         Jl[T+1, ntau]: Jacobian vector for cost function
         Hl[T+1, ntau, ntau]: Hessian matrix for cost function
     '''
-    if params is None: params = {'cost': {}, 'dynamic': {}}
+    if params is None: params = {}
+    for key in ['cost', 'dynamic']:
+        if key not in params:
+            params[key] = dict()
     alpha: float = 1.0
     T, nx, ntau = Jf.shape
     nu = ntau - nx
@@ -52,9 +55,9 @@ def lqr_step_solve(
     for j in range(line_search_max_num):
         for t in range(T):
             _u[t, :] = u[t, :] + alpha*ks[t, :] + (Ks[t, :, :] @ (_x[t, :] - x[t, :]).reshape(-1, 1)).flatten()
-            _x[t+1, :] = dynamic.forward((_x[t, :], _u[t, :])).flatten()
+            _x[t+1, :] = dynamic.forward((_x[t, :], _u[t, :]), {**params.get('dynamic'), 't': t}).flatten()
 
-        if metricfunc(_x, _u, params.get('cost')) < metricfunc(x, u, params.get('cost')):
+        if metricfunc(_x, _u, params) < metricfunc(x, u, params):
             x = _x.clone(); u = _u.clone()
             break
         alpha *= line_search_decay_rate
@@ -92,7 +95,10 @@ def mpc_solve(
         line_search_max_num: int=10,
         line_search_decay_rate: float=0.5,
     ) -> Tuple[Tensor]:
-    if params is None: params = {'cost': {}, 'dynamic': {}}
+    if params is None: params = {}
+    for key in ['cost', 'dynamic']:
+        if key not in params:
+            params[key] = dict()
     with torch.no_grad():
         x: Tensor = torch.zeros([T+1, nx])
         u: Tensor = torch.zeros([T, nu])

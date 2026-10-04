@@ -10,7 +10,7 @@
             "request": "launch",
             "program": "main.py",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/examples/sp_ex/"
+            "cwd": "${workspaceFolder}/examples/lc_ex/"
         }
     ]
 }

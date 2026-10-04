@@ -26,12 +26,17 @@ class DiffMPC:
         self._metricfunc = iLQRMetricFunction(nx, nu, T, self._cost, self._dynamic)
     
     def step(self, x0: Tensor, params: Optional[Dict[str, Any]]=None) -> Tuple[Tensor]:
+        if params is None: params = {}
+        for key in ['cost', 'dynamic']:
+            if key not in params:
+                params[key] = dict()
+
         with torch.no_grad():
             x: Tensor = torch.zeros([self._T+1, self._nx])
             u: Tensor = torch.zeros([self._T, self._nu])
             x[0] = x0.flatten()
             for t in range(self._T):
-                x[t+1] = self._dynamic.forward((x[t], u[t])).flatten()
+                x[t+1] = self._dynamic.forward((x[t], u[t]), {**params.get('dynamic'), 't': t}).flatten()
 
             for i in range(self._iter_nums):
                 Jf, Jl, Hl = build_ilqr_params(x, u, self._dynamic, self._cost, params)
