@@ -1,3 +1,4 @@
 github.sh
 .venv
 old-version
+*.zip
