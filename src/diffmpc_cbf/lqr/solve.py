@@ -25,7 +25,7 @@ def lqr_step_solve(
         Hl[T+1, ntau, ntau]: Hessian matrix for cost function
     '''
     alpha: float = 1.0
-    nx, ntau, T = Jf.shape
+    T, nx, ntau = Jf.shape
     nu = ntau - nx
     ks = torch.zeros([T, nu])
     Ks = torch.zeros([T, nu, nx])
@@ -34,7 +34,7 @@ def lqr_step_solve(
     for t in range(T-1, -1, -1):
         Jft = Jf[t, :, :] # (nx, ntau)
         Qtau = Jl[t, :].unsqueeze(-1) + Jft.T @ Vx # (ntau, 1)
-        Qtautau = Hl[:, :, t] + Jft.T @ Vxx @ Jft # (ntau, ntau)
+        Qtautau = Hl[t, :, :] + Jft.T @ Vxx @ Jft # (ntau, ntau)
         Qx, Qu = Qtau[:nx, :], Qtau[nx:, :]
         Qxx, Qxu, Qux, Quu = Qtautau[:nx, :nx], Qtautau[:nx, nx:], Qtautau[nx:, :nx], Qtautau[nx:, nx:]
         k: Tensor = torch.linalg.solve(Quu, -Qu) # (nu, 1)
@@ -45,7 +45,7 @@ def lqr_step_solve(
         ks[t, :] = k.flatten()
         Ks[t, :, :] = K
 
-    _x = torch.zeros_like(x); _x[:, 0] = x0.flatten()
+    _x = torch.zeros_like(x); _x[0] = x0.flatten()
     _u = torch.zeros_like(u)
     for j in range(line_search_max_num):
         for t in range(T):
@@ -91,7 +91,7 @@ def mpc_solve(
     with torch.no_grad():
         x: Tensor = torch.zeros([T+1, nx])
         u: Tensor = torch.zeros([T, nu])
-        x[0] = x0
+        x[0] = x0.flatten()
         for t in range(T):
             x[t+1] = dynamic.forward((x[t], u[t])).flatten()
 
