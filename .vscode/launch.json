@@ -8,8 +8,9 @@
             "name": "Debugger",
             "type": "debugpy",
             "request": "launch",
-            "program": "./examples/main.py",
-            "console": "integratedTerminal"
+            "program": "main.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/examples/sp_ex/"
         }
     ]
 }

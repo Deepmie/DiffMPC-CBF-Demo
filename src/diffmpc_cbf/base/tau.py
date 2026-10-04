@@ -1,9 +1,9 @@
-import numpy as np
-from numpy import ndarray
 from typing import Optional, Union
+import torch
+from torch import Tensor
 
 class Tau:
-    def __init__(self, nx: int, nu: int, T: int, tau_init: Optional[ndarray]=None):
+    def __init__(self, nx: int, nu: int, T: int, tau_init: Optional[Tensor]=None):
         self._nx = nx; self._nu = nu; self._T = T
         self._ntau = self._nx + self._nu
         self._var_dims = self._T*self._ntau + self._nx
@@ -13,13 +13,13 @@ class Tau:
         self._build(tau_init)
 
     @classmethod
-    def build_from_numpy(cls, tau: ndarray, nx: int, ntau: Optional[int]=None):
+    def build_from_tensor(cls, tau: Tensor, nx: int, ntau: Optional[int]=None):
         if ntau is None:
             T_, ntau = tau.shape
             nu = ntau - nx; T = T_-1
         else:
             nu = ntau - nx
-            tau = np.concatenate([tau, np.zeros(nu)])
+            tau = torch.concat([tau, torch.zeros(nu)])
             tau = tau.reshape(-1, ntau)
             T = tau.shape[0]-1
         return cls(nx, nu, T, tau)
@@ -36,7 +36,7 @@ class Tau:
         else: self.unflatten()
         self._sync = False
 
-    def __getitem__(self, t: int) -> ndarray:
+    def __getitem__(self, t: int) -> Tensor:
         if self._is_flatten:
             return self._tau[t*self._ntau: (t+1)*self._ntau] # (ntau, )
         else:
@@ -46,12 +46,12 @@ class Tau:
         tau_other.sync(self)
         _tau = self.tau + tau_other.tau
         tau_other.recover()
-        return Tau.build_from_numpy(_tau, self._nx, ntau=self._ntau if self._is_flatten else None)
+        return Tau.build_from_tensor(_tau, self._nx, ntau=self._ntau if self._is_flatten else None)
 
     def __rmul__(self, other: Union[int, float]):
         if isinstance(other, (int, float)):
             _tau = other * self._tau
-            return Tau.build_from_numpy(_tau, self._nx, ntau=self._ntau if self._is_flatten else None)
+            return Tau.build_from_tensor(_tau, self._nx, ntau=self._ntau if self._is_flatten else None)
         return NotImplemented
 
     def __mul__(self, other: Union[int, float]):
@@ -65,36 +65,36 @@ class Tau:
         tau_other.recover()
         return self
 
-    def get_state(self, t: int) -> ndarray:
+    def get_state(self, t: int) -> Tensor:
         return self._tau[t*self._ntau: t*self._ntau+self._nx] if self._is_flatten else \
         self._tau[t, :self._nx]
 
-    def get_control(self, t: int) -> ndarray:
+    def get_control(self, t: int) -> Tensor:
         return self._tau[t*self._ntau+self._nx: (t+1)*self._ntau] if self._is_flatten else \
         self._tau[t, self._nx:]
     
-    def set_state_init(self, x0: ndarray): # (nx, )
+    def set_state_init(self, x0: Tensor): # (nx, )
         self._tau[0, :self._nx] = x0
 
-    def set_tau(self, tau: ndarray):
+    def set_tau(self, tau: Tensor):
         self._tau = tau
         return tau
 
-    def set_state(self, x: ndarray, t: int): # (nx, )
+    def set_state(self, x: Tensor, t: int): # (nx, )
         if self._is_flatten:
             self._tau[t*self._ntau: t*self._ntau+self._nx] = x
         else:
             self._tau[t, :self._nx] = x
         return x
 
-    def set_control(self, u: ndarray, t: int): # (nu, )
+    def set_control(self, u: Tensor, t: int): # (nu, )
         if self._is_flatten:
             self._tau[t*self._ntau+self._nx: (t+1)*self._ntau] = u
         else:
             self._tau[t, self._nx:] = u
         return u
 
-    def flatten(self, is_clip: bool=True) -> ndarray:
+    def flatten(self, is_clip: bool=True) -> Tensor:
         if self._is_flatten: return self._tau
         self._is_clip = is_clip
         self._is_flatten = True
@@ -102,17 +102,21 @@ class Tau:
         if is_clip: self._tau = self._tau[:self._var_dims]
         return self._tau
 
-    def unflatten(self, is_clip: bool=True) -> ndarray:
+    def unflatten(self, is_clip: bool=True) -> Tensor:
         if not self._is_flatten: return self._tau
         if self._is_clip != is_clip: raise ValueError('clip value set exist conflict')
         self._is_flatten = False
-        if is_clip: self._tau = np.concatenate([self._tau, np.zeros(self._nu)])
+        if is_clip: self._tau = torch.concat([self._tau, torch.zeros(self._nu)])
         self._tau = self._tau.reshape(self._T+1, self._ntau)
         return self._tau
 
-    def _build(self, tau_init: Optional[ndarray]):
+    def detach(self) -> Tensor:
+        self._tau = self._tau.detach()
+        return self
+
+    def _build(self, tau_init: Optional[Tensor]):
         # (T+1, ntau)
-        self._tau = np.zeros([self._T+1, self._ntau]) if tau_init is None else tau_init.copy()
+        self._tau = torch.zeros([self._T+1, self._ntau]) if tau_init is None else tau_init.clone()
         self._is_flatten = False
 
     @property
