@@ -25,7 +25,7 @@ def get_lambdas(
     lambdas: Tensor = torch.zeros([T+1, nx]) # (T+1, nx)
     for t in range(T, -1, -1):
         lambdas[t] = (C[t, :nx, :nx] @ ipt[t, :nx].unsqueeze(-1)).squeeze() + c[t, :nx] # (nx, )
-        if t < T: lambdas[t] += (F[t, :, :nx] @ lambdas[t+1].unsqueeze(-1)).squeeze() # (nx, )
+        if t < T: lambdas[t] += (F[t, :, :nx].permute(0, 2, 1) @ lambdas[t+1].unsqueeze(-1)).squeeze() # (nx, )
     return lambdas # (T+1, nx)
 
 def LQRStep(
@@ -34,10 +34,11 @@ def LQRStep(
         u: Tensor,
         dynamic: Dynamic,
         cost: Cost,
-        cost_params: Optional[Dict[str, Tensor]],
+        params: Optional[Dict[str, Tensor]],
         metricfunc: iLQRMetricFunction,
         iter_nums: int,
         line_search_max_num: int,
+        line_search_decay_rate: float,
 ) -> Callable:
     '''
     Input:
@@ -56,8 +57,8 @@ def LQRStep(
             Jl: Tensor, # (T+1, ntau)
             Hl: Tensor, # (T+1, ntau, ntau)
         ) -> Tuple[Tensor]:
-            _x, _u = lqr_step_solve(x0, x, u, Jf, Jl, Hl, dynamic, metricfunc, cost_params, line_search_max_num)
-            ctx.save_for_backward(Jf, Jl, Hl, x, u)
+            _x, _u = lqr_step_solve(x0, x, u, Jf, Jl, Hl, dynamic, params, metricfunc, line_search_max_num, line_search_decay_rate)
+            ctx.save_for_backward(Jf, Jl, Hl, _x, _u)
             return _x, _u
 
         @staticmethod
@@ -72,14 +73,16 @@ def LQRStep(
             tau[:, :nx] = x; tau[:T, nx:] = u
             dl_dtau = torch.zeros([T+1, ntau]) # (T+1, ntau)
             dl_dtau[:, :nx] = dl_dx; dl_dtau[:T, nx:] = dl_du
+            dx0 = torch.tensor([nx])
             dynamic_back = LinDynamic(nx, nu, T, Jf)
             cost_back = QuadCost(nx, nu, T, Hl, -dl_dtau)
-            cost_params_back = None
-            dx, du = mpc_solve(x0, nx, nu, T, dynamic_back, cost_back, cost_params_back, metricfunc, iter_nums, line_search_max_num)
+            params_back = None
+            dmetricfunc = iLQRMetricFunction(nx, nu, T, cost_back, dynamic_back)
+            dx, du = mpc_solve(dx0, nx, nu, T, dynamic_back, cost_back, params_back, dmetricfunc, iter_nums, line_search_max_num)
             dtau = torch.zeros([T+1, ntau])
             dtau[:, :nx] = dx; dtau[:T, nx:] = du
             lams: Tensor  = get_lambdas((x, u), nx, nu, T, Hl, Jl, Jf)
-            dlams: Tensor = get_lambdas((x, u), nx, nu, T, Hl, -dl_dtau, Jf)
+            dlams: Tensor = get_lambdas((dx, du), nx, nu, T, Hl, -dl_dtau, Jf)
             dl_dHl: Tensor = -0.5 * (dtau.unsqueeze(-1) @ tau.unsqueeze(-2) + tau.unsqueeze(-1) @ dtau.unsqueeze(-2)) # (T+1, ntau, ntau)
             dl_dJl: Tensor = -dtau # (T+1, ntau)
             dl_dJf: Tensor = -(dlams[1:].unsqueeze(-1) @ tau[:-1].unsqueeze(-2) + lams[1:].unsqueeze(-1) @ dtau[:-1].unsqueeze(-2)) # (T, nx, ntau)

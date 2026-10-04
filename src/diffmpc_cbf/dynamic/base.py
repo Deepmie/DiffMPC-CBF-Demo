@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Tuple, Union
+from typing import Dict, Tuple, Union, Optional, Any
 import torch
 from torch import Tensor
 import torch.nn as nn
@@ -10,7 +10,7 @@ class Dynamic(ABC, nn.Module):
         self._nx = nx; self._nu = nu; self._T = T; self._ntau = self._nx + self._nu
 
     @abstractmethod
-    def forward(self, ipt: Union[Tensor, Tuple[Tensor]], order: int=0) -> Tensor:
+    def forward(self, ipt: Union[Tensor, Tuple[Tensor]], params: Optional[Dict[str, Any]], order: int=0) -> Tensor:
         if len(ipt) == 1: ipt = ipt[0]
         if torch.is_tensor(ipt): ipt = (ipt[:self._nx], ipt[self._nx:])
         self._ipt = ipt

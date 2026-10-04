@@ -11,9 +11,10 @@ def lqr_step_solve(
         Jl: Tensor,
         Hl: Tensor,
         dynamic: Dynamic,
-        cost_params: Optional[Dict[str, Tensor]],
+        params: Optional[Dict[str, Tensor]],
         metricfunc: iLQRMetricFunction,
         line_search_max_num: int=10,
+        line_search_decay_rate: float=0.5,
     ) -> Tuple[Tensor]:
     '''
     Input:
@@ -24,6 +25,7 @@ def lqr_step_solve(
         Jl[T+1, ntau]: Jacobian vector for cost function
         Hl[T+1, ntau, ntau]: Hessian matrix for cost function
     '''
+    if params is None: params = {'cost': {}, 'dynamic': {}}
     alpha: float = 1.0
     T, nx, ntau = Jf.shape
     nu = ntau - nx
@@ -52,9 +54,10 @@ def lqr_step_solve(
             _u[t, :] = u[t, :] + alpha*ks[t, :] + (Ks[t, :, :] @ (_x[t, :] - x[t, :]).reshape(-1, 1)).flatten()
             _x[t+1, :] = dynamic.forward((_x[t, :], _u[t, :])).flatten()
 
-        if metricfunc(_x, _u, cost_params) < metricfunc(x, u, cost_params):
+        if metricfunc(_x, _u, params.get('cost')) < metricfunc(x, u, params.get('cost')):
             x = _x.clone(); u = _u.clone()
             break
+        alpha *= line_search_decay_rate
     return x, u
 
 
@@ -63,7 +66,7 @@ def build_ilqr_params(
         u: Tensor,
         dynamic: Dynamic,
         cost: Cost,
-        cost_params: Optional[Dict[str, Tensor]],
+        params: Optional[Dict[str, Tensor]],
     ) -> Tuple[Tensor]:
     '''
     Input:
@@ -71,8 +74,8 @@ def build_ilqr_params(
         u[T, nu]: control in current iteration
     '''
     Jf = dynamic.jacobian((x, u))
-    Jl = cost.jacobian((x, u), cost_params)
-    Hl = cost.hessian((x, u), cost_params)
+    Jl = cost.jacobian((x, u), params.get('cost'))
+    Hl = cost.hessian((x, u), params.get('cost'))
     return Jf, Jl, Hl
 
 
@@ -83,23 +86,25 @@ def mpc_solve(
         T: int,
         dynamic: Dynamic,
         cost: Cost,
-        cost_params: Optional[Dict[str, Tensor]],
+        params: Optional[Dict[str, Tensor]],
         metricfunc: iLQRMetricFunction,
         iter_nums: int=10,
         line_search_max_num: int=10,
+        line_search_decay_rate: float=0.5,
     ) -> Tuple[Tensor]:
+    if params is None: params = {'cost': {}, 'dynamic': {}}
     with torch.no_grad():
         x: Tensor = torch.zeros([T+1, nx])
         u: Tensor = torch.zeros([T, nu])
         x[0] = x0.flatten()
         for t in range(T):
-            x[t+1] = dynamic.forward((x[t], u[t])).flatten()
+            x[t+1] = dynamic.forward((x[t], u[t]), {**params.get('dynamic'), 't': t}).flatten()
 
         for i in range(iter_nums):
-            Jf, Jl, Hl = build_ilqr_params(x, u, dynamic, cost, cost_params)
-            x, u = lqr_step_solve(x0, x, u, Jf, Jl, Hl, dynamic, cost_params, metricfunc, line_search_max_num)
-
+            Jf, Jl, Hl = build_ilqr_params(x, u, dynamic, cost, params)
+            x, u = lqr_step_solve(x0, x, u, Jf, Jl, Hl, dynamic, params, metricfunc, line_search_max_num, line_search_decay_rate)
+    
     x_star, u_star = x.detach(), u.detach()
-    Jf, Jl, Hl = build_ilqr_params(x_star, u_star, dynamic, cost, cost_params)
-    x_out, u_out = lqr_step_solve(x0, x_star, u_star, Jf, Jl, Hl, dynamic, cost_params, metricfunc, line_search_max_num)
+    Jf, Jl, Hl = build_ilqr_params(x_star, u_star, dynamic, cost, params)
+    x_out, u_out = lqr_step_solve(x0, x_star, u_star, Jf, Jl, Hl, dynamic, params, metricfunc, line_search_max_num, line_search_decay_rate)
     return x_out, u_out

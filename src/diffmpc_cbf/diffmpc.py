@@ -34,7 +34,7 @@ class DiffMPC:
             dveq: Tensor = self._get_init_dveq()
             for t in range(self._T):
                 _tau.set_state(self._dynamic.forward(_tau[t]).flatten(), t+1)
-
+            
             for i in range(self._iter_nums):
                 alpha: float = 1.0
                 Q, p, G, h, A, b = self._build_sqp_params(x0, _tau, dveq, cost_params)

@@ -51,5 +51,5 @@ class QuadCost(Cost):
             ipt = _tau
         return (self._C @ ipt.unsqueeze(-1) + self._c.unsqueeze(-1)).squeeze() # (T+1, ntau)
 
-    def hessian(self) -> Tensor:
+    def hessian(self, ipt: Union[Tensor, Tuple[Tensor]], params: Optional[Dict[str, Tensor]]=None) -> Tensor:
         return self._C # (T+1, ntau, ntau)
