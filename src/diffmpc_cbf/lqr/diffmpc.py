@@ -42,7 +42,7 @@ class DiffMPC:
                 Jf, Jl, Hl = build_ilqr_params(x, u, self._dynamic, self._cost, params)
                 x, u = lqr_step_solve(x0, x, u, Jf, Jl, Hl, self._dynamic, params, self._metricfunc, self._line_search_max_num, self._line_search_decay_rate)
         
-        x_star, u_star = x.detach(), u.detach()
+        x_star, u_star = x.detach().requires_grad_(), u.detach().requires_grad_()
         Jf, Jl, Hl = build_ilqr_params(x_star, u_star, self._dynamic, self._cost, params)
         x_out, u_out = LQRStep(x0, x_star, u_star, self._dynamic, self._cost, params, self._metricfunc, self._iter_nums, self._line_search_max_num, self._line_search_decay_rate)(Jf, Jl, Hl)
         return x_out, u_out

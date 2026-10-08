@@ -5,12 +5,20 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debugger",
+            "name": "MainDebugger",
             "type": "debugpy",
             "request": "launch",
-            "program": "main.py",
+            "program": "./examples/lc_ex/main.py",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/examples/lc_ex/"
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "RefDebugger",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "./examples/lc_ex/ref.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}"
         }
     ]
 }

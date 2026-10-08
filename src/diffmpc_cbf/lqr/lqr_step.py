@@ -25,7 +25,7 @@ def get_lambdas(
     lambdas: Tensor = torch.zeros([T+1, nx]) # (T+1, nx)
     for t in range(T, -1, -1):
         lambdas[t] = (C[t, :nx, :nx] @ ipt[t, :nx].unsqueeze(-1)).squeeze() + c[t, :nx] # (nx, )
-        if t < T: lambdas[t] += (F[t, :, :nx].permute(0, 2, 1) @ lambdas[t+1].unsqueeze(-1)).squeeze() # (nx, )
+        if t < T: lambdas[t] += (F[t, :, :nx].permute(1, 0) @ lambdas[t+1].unsqueeze(-1)).squeeze() # (nx, )
     return lambdas # (T+1, nx)
 
 def LQRStep(
