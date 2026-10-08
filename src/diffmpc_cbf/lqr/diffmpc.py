@@ -16,7 +16,7 @@ class DiffMPC:
         dynamic: Dynamic,
         umin: Tensor, # (nu,)
         umax: Tensor,
-        iter_nums: int=10,
+        iter_nums: int=20,
         line_search_max_num: int=5,
         line_search_decay_rate: float=0.5,
     ):

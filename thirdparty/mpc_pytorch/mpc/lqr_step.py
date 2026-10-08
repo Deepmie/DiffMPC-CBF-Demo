@@ -327,7 +327,9 @@ def LQRStep(n_state,
             dx_init = Variable(torch.zeros_like(x_init))
             _mpc = mpc.MPC(
                 n_state, n_ctrl, T,
-                u_zero_I=I,
+                # u_zero_I=I,
+                u_lower=u_lower,
+                u_upper=u_upper,
                 u_init=None,
                 lqr_iter=1,
                 verbose=-1,

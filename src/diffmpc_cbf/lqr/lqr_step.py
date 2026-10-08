@@ -73,12 +73,12 @@ def LQRStep(
             tau[:, :nx] = x; tau[:T, nx:] = u
             dl_dtau = torch.zeros([T+1, ntau]) # (T+1, ntau)
             dl_dtau[:, :nx] = dl_dx; dl_dtau[:T, nx:] = dl_du
-            dx0 = torch.tensor([nx])
+            dx0 = torch.zeros([nx])
             dynamic_back = LinDynamic(nx, nu, T, Jf)
             cost_back = QuadCost(nx, nu, T, Hl, -dl_dtau)
             params_back = None
             dmetricfunc = iLQRMetricFunction(nx, nu, T, cost_back, dynamic_back)
-            dx, du = mpc_solve(dx0, nx, nu, T, dynamic_back, cost_back, params_back, dmetricfunc, iter_nums, line_search_max_num)
+            dx, du = mpc_solve(dx0, nx, nu, T, dynamic_back, cost_back, params_back, dmetricfunc, 0, line_search_max_num)
             dtau = torch.zeros([T+1, ntau])
             dtau[:, :nx] = dx; dtau[:T, nx:] = du
             lams: Tensor  = get_lambdas((x, u), nx, nu, T, Hl, Jl, Jf)

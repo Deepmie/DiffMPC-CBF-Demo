@@ -33,7 +33,7 @@ def main():
     plot_trajectory(xs, 'imgs/sp_sqp.png')
 
 def main2():
-    torch.manual_seed(0)
+    torch.manual_seed(1)
     nx: int = 2
     nu: int = 1
     T: int  = 5
@@ -41,6 +41,7 @@ def main2():
     N: int  = 50
     ntau = nx + nu
     C: Tensor = torch.rand([T+1, ntau, ntau], requires_grad=True)
+    C: Tensor = C.permute(0, 2, 1) @ C
     c: Tensor = torch.rand([T+1, ntau], requires_grad=True)
     F: Tensor = torch.rand([T, nx, ntau], requires_grad=True)
     cost      = LCost(nx, nu, T, C, c)
@@ -56,15 +57,19 @@ def main2():
     xs = torch.zeros([N, nx]); xs[0] = x0.flatten()
     for t in range(1, N):
         _, u = mpc.step(xs[t-1], {'cost': {'xref': torch.tensor([[1.], [0.]])}})
-        xs[t]  = dynamic.forward((xs[t-1], u[0]), {'t': 0}).flatten()
+        u = u.view(-1)
+        for i in range(len(u)):
+            dl_dC, dl_dc, dl_dF = torch.autograd.grad(u[i], [C, c, F], retain_graph=True)
+            print('dl_dC:')
+            print(dl_dC)
+            print('dl_dc:')
+            print(dl_dc)
+            print('dl_dF:')
+            print(dl_dF)
+            input('finished...')
+        
+        xs[t]  = dynamic.forward((xs[t-1], u[0]), {'t': 0}).flatten()   
     
-
-    # def loss_func(u: Tensor) -> Tensor: # (nu, )
-    #     return u[0]
-
-    # loss = loss_func(u)
-    # dl_dC, = torch.autograd.grad(loss, (C, ), retain_graph=True)
-    # print(dl_dC)
     print('ours')
     print(xs)
 
