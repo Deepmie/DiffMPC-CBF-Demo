@@ -3,3 +3,4 @@ github.sh
 old-version
 *.zip
 refpaper/*.pdf
+pyproject.toml
