@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qpth"
+version = "0.0.19"
+description = "A fast and differentiable QP solver for modern PyTorch."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [
+  { name = "Brandon Amos", email = "bamos@cs.cmu.edu" }
+]
+dependencies = [
+  "numpy>=2.0,<3",
+  "torch>=2.0",
+]
+
+[project.optional-dependencies]
+cvxpy = [
+  "cvxpy>=1.6",
+]
+test = [
+  "pytest>=8",
+]
+
+[project.urls]
+Homepage = "https://github.com/locuslab/qpth"
+Repository = "https://github.com/locuslab/qpth"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["qpth*"]
+exclude = ["tests*"]
