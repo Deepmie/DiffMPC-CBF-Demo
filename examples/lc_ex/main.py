@@ -40,6 +40,7 @@ def main2():
     delta_t: float = 0.1
     N: int  = 50
     ntau = nx + nu
+    nl = T * nu
     C: Tensor = torch.rand([T+1, ntau, ntau], requires_grad=True)
     C: Tensor = C.permute(0, 2, 1) @ C
     c: Tensor = torch.rand([T+1, ntau], requires_grad=True)
@@ -58,17 +59,30 @@ def main2():
     for t in range(1, N):
         _, u = mpc.step(xs[t-1], {'cost': {'xref': torch.tensor([[1.], [0.]])}})
         u = u.view(-1)
-        for i in range(len(u)):
-            dl_dC, dl_dc, dl_dF = torch.autograd.grad(u[i], [C, c, F], retain_graph=True)
-            print('dl_dC:')
-            print(dl_dC)
-            print('dl_dc:')
-            print(dl_dc)
-            print('dl_dF:')
-            print(dl_dF)
-            input('finished...')
+        dl_dC = torch.zeros([nl, T+1, ntau, ntau])
+        dl_dc = torch.zeros([nl, T+1, ntau])
+        dl_dF = torch.zeros([nl, T, nx, ntau])
+        for i in range(nl):
+            dl_dCi, dl_dci, dl_dFi = torch.autograd.grad(u[i], [C, c, F], retain_graph=True)
+            dl_dC[i] = dl_dCi; dl_dc[i] = dl_dci; dl_dF[i] = dl_dFi
         
-        xs[t]  = dynamic.forward((xs[t-1], u[0]), {'t': 0}).flatten()   
+        C_ref = C[:T].unsqueeze(1); c_ref = c[:T].unsqueeze(1); F_ref = F[:T-1].unsqueeze(1)
+        x_ref, u_ref, obj_ref = MPC(
+            nx, nu, T, umin.unsqueeze(0).unsqueeze(1).expand(T, 1, nu), umax.unsqueeze(0).unsqueeze(1).expand(T, 1, nu), None,
+            lqr_iter=20, exit_unconverged=False,
+        )(xs[t-1].unsqueeze(0), QuadCost(C_ref, c_ref), LinDx(F_ref, None))
+        u_ref = u_ref.view(-1)
+        dl_dC_ref = torch.zeros([nl, T, ntau, ntau])
+        dl_dc_ref = torch.zeros([nl, T, ntau])
+        dl_dF_ref = torch.zeros([nl, T-1, nx, ntau])
+        for i in range(nl):
+            dl_dCi, dl_dci, dl_dFi = torch.autograd.grad(u_ref[i], [C_ref, c_ref, F_ref], retain_graph=True)
+            dl_dC_ref[i] = dl_dCi.squeeze(1); dl_dc_ref[i] = dl_dci.squeeze(1); dl_dF_ref[i] = dl_dFi.squeeze(1)
+
+        print(dl_dC, dl_dC_ref)
+        print(torch.allclose(dl_dC[:, :T], dl_dC_ref))
+        input('finished...')
+        xs[t]  = dynamic.forward((xs[t-1], u[0]), {'t': 0}).flatten()
     
     print('ours')
     print(xs)
