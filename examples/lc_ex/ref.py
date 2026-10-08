@@ -15,10 +15,10 @@ def main_ref():
     delta_t: float = 0.1
     N: int  = 50
     ntau = nx + nu
-    C: Tensor = torch.rand([T+1, ntau, ntau], requires_grad=True)
+    C: Tensor = torch.rand([T+1, ntau, ntau], requires_grad=True)[:T]
     C = C.permute(0, 2, 1) @ C
-    c: Tensor = torch.rand([T+1, ntau], requires_grad=True)
-    F: Tensor = torch.rand([T, nx, ntau], requires_grad=True)
+    c: Tensor = torch.rand([T+1, ntau], requires_grad=True)[:T]
+    F: Tensor = torch.rand([T, nx, ntau], requires_grad=True)[:T-1]
     cost      = LCost(nx, nu, T, C, c)
     dynamic   = LcDynamic(nx, nu, T, F)
     
@@ -34,7 +34,7 @@ def main_ref():
     for t in range(1, N):
         C = C.unsqueeze(1); c = c.unsqueeze(1); F = F.unsqueeze(1)
         x_ref, u_ref, obj_ref = MPC(
-            nx, nu, T+1, umin.unsqueeze(0).unsqueeze(1).expand(T+1, 1, nu), umax.unsqueeze(0).unsqueeze(1).expand(T+1, 1, nu), None,
+            nx, nu, T, umin.unsqueeze(0).unsqueeze(1).expand(T, 1, nu), umax.unsqueeze(0).unsqueeze(1).expand(T, 1, nu), None,
             lqr_iter=20, exit_unconverged=False
         )(xs_ref[t-1].reshape(1, -1), QuadCost(C, c), LinDx(F, None))
         
