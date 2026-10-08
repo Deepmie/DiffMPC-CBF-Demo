@@ -1,0 +1,8 @@
+numpy<3,>=2.0
+torch>=2.0
+
+[cvxpy]
+cvxpy>=1.6
+
+[test]
+pytest>=8
