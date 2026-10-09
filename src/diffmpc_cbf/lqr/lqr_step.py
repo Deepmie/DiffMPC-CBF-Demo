@@ -25,9 +25,9 @@ def get_lambdas(
     for t in range(T, -1, -1):
         lambdas[t] = Jl[t, :nx] # (nx, )
         # consider terminal cost
-        # if t < T: lambdas[t] += (F[t, :, :nx].permute(1, 0) @ lambdas[t+1].unsqueeze(-1)).squeeze() # (nx, )
+        if t < T: lambdas[t] += (Jf[t, :, :nx].permute(1, 0) @ lambdas[t+1].unsqueeze(-1)).squeeze() # (nx, )
         # not consider
-        if t < T-1: lambdas[t] += (Jf[t, :, :nx].permute(1, 0) @ lambdas[t+1].unsqueeze(-1)).squeeze() # (nx, )
+        # if t < T-1: lambdas[t] += (Jf[t, :, :nx].permute(1, 0) @ lambdas[t+1].unsqueeze(-1)).squeeze() # (nx, )
     return lambdas # (T+1, nx)
 
 def LQRStep(
@@ -86,7 +86,8 @@ def LQRStep(
             lams: Tensor  = get_lambdas((x, u), nx, nu, T, Jl, Jf)
             dlams: Tensor = get_lambdas((dx, du), nx, nu, T, cost_back.jacobian((dx, du)), Jf)
             # dl_dHl: Tensor = -0.5 * (dtau.unsqueeze(-1) @ tau.unsqueeze(-2) + tau.unsqueeze(-1) @ dtau.unsqueeze(-2)) # (T+1, ntau, ntau)
-            dl_dHl: Tensor = torch.zeros_like(Hl)
+            # dl_dHl: Tensor = torch.zeros_like(Hl)
+            dl_dHl: Tensor = 0.5 * (dtau.unsqueeze(-1) @ tau.unsqueeze(-2) - tau.unsqueeze(-1) @ dtau.unsqueeze(-2)) # (T+1, ntau, ntau)
             dl_dJl: Tensor = -dtau # (T+1, ntau)
             dl_dJf: Tensor = -(dlams[1:].unsqueeze(-1) @ tau[:-1].unsqueeze(-2) + lams[1:].unsqueeze(-1) @ dtau[:-1].unsqueeze(-2)) # (T, nx, ntau)
             return dl_dJf, dl_dJl, dl_dHl

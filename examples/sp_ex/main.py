@@ -12,8 +12,8 @@ def main():
     N: int  = 50
     cost    = SpCost(nx, nu, T)
     dynamic = SpDynamic(nx, nu, T, delta_t)
-    umin    = torch.tensor([-1.0])
-    umax    = torch.tensor([1.0])
+    umin    = torch.tensor([-1000.0])
+    umax    = torch.tensor([1000.0])
     mpc     = DiffMPC(nx, nu, T, 1, cost, dynamic, umin, umax)
 
     # solve one step mpc

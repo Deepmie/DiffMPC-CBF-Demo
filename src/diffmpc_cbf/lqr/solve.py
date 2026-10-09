@@ -36,11 +36,11 @@ def lqr_step_solve(
     Ks = torch.zeros([T, nu, nx])
     
     # consider terminal cost
-    # Vx: Tensor   = Jl[-1, :nx].unsqueeze(-1) # (nx, 1)
-    # Vxx: Tensor  = Hl[-1, :nx, :nx] # (nx, nx)
+    Vx: Tensor   = Jl[-1, :nx].unsqueeze(-1) # (nx, 1)
+    Vxx: Tensor  = Hl[-1, :nx, :nx] # (nx, nx)
     # not consider
-    Vx: Tensor = torch.zeros([nx, 1])
-    Vxx: Tensor = torch.zeros([nx, nx])
+    # Vx: Tensor = torch.zeros([nx, 1])
+    # Vxx: Tensor = torch.zeros([nx, nx])
     for t in range(T-1, -1, -1):
         Jft = Jf[t, :, :] # (nx, ntau)
         Qtau = Jl[t, :].unsqueeze(-1) + Jft.T @ Vx # (ntau, 1)

@@ -20,6 +20,8 @@ class LinDynamic(Dynamic):
             return (self._F[t] @ ipt.unsqueeze(-1)).squeeze() # (nx, )
         elif order == 1:
             return self._F[t] # (nx, ntau)
+        elif order == 2: # (nx, ntau, ntau)
+            return torch.zeros([self._nx, self._ntau, self._ntau])
 
     def jacobian(self, ipt: Union[Tensor, Tuple[Tensor]]):
         '''

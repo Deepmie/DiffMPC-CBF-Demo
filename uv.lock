@@ -227,7 +227,7 @@ requires-dist = [
     { name = "matplotlib", specifier = ">=3.11.2" },
     { name = "numpy", specifier = ">2" },
     { name = "qpth", editable = "thirdparty/qpth" },
-    { name = "torch", path = "../pytorch-whl/torch-2.11.0+cu128-cp311-cp311-manylinux_2_28_x86_64.whl" },
+    { name = "torch", path = "/home/deepmiemie/Projects/installs/torch-2.11.0+cu128-cp311-cp311-manylinux_2_28_x86_64.whl" },
 ]
 
 [[package]]
@@ -743,7 +743,7 @@ requires-dist = [
     { name = "cvxpy", marker = "extra == 'cvxpy'", specifier = ">=1.6" },
     { name = "numpy", specifier = ">=2.0,<3" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8" },
-    { name = "torch", path = "../pytorch-whl/torch-2.11.0+cu128-cp311-cp311-manylinux_2_28_x86_64.whl" },
+    { name = "torch", path = "/home/deepmiemie/Projects/installs/torch-2.11.0+cu128-cp311-cp311-manylinux_2_28_x86_64.whl" },
 ]
 provides-extras = ["cvxpy", "test"]
 
@@ -834,7 +834,7 @@ wheels = [
 [[package]]
 name = "torch"
 version = "2.11.0+cu128"
-source = { path = "../pytorch-whl/torch-2.11.0+cu128-cp311-cp311-manylinux_2_28_x86_64.whl" }
+source = { path = "/home/deepmiemie/Projects/installs/torch-2.11.0+cu128-cp311-cp311-manylinux_2_28_x86_64.whl" }
 dependencies = [
     { name = "cuda-bindings", marker = "sys_platform == 'linux'" },
     { name = "cuda-toolkit", extra = ["cublas", "cudart", "cufft", "cufile", "cupti", "curand", "cusolver", "cusparse", "nvjitlink", "nvrtc", "nvtx"], marker = "sys_platform == 'linux'" },
