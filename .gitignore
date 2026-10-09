@@ -2,5 +2,5 @@ github.sh
 .venv
 old-version
 *.zip
-refpaper/*.pdf
+# refpaper/*.pdf
 /pyproject.toml
