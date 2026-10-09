@@ -79,8 +79,10 @@ def main2():
             dl_dCi, dl_dci, dl_dFi = torch.autograd.grad(u_ref[i], [C_ref, c_ref, F_ref], retain_graph=True)
             dl_dC_ref[i] = dl_dCi.squeeze(1); dl_dc_ref[i] = dl_dci.squeeze(1); dl_dF_ref[i] = dl_dFi.squeeze(1)
 
-        print(dl_dC, dl_dC_ref)
+
         print(torch.allclose(dl_dC[:, :T], dl_dC_ref))
+        print(torch.allclose(dl_dc[:, :T], dl_dc_ref))
+        print(torch.allclose(dl_dF[:, :T-1], dl_dF_ref))
         input('finished...')
         xs[t]  = dynamic.forward((xs[t-1], u[0]), {'t': 0}).flatten()
     
