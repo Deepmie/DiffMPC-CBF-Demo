@@ -53,7 +53,10 @@ class Dynamic(ABC, nn.Module):
                 ])
             elif len(ipt) == 1:
                 ipt = ipt[0]
-        return torch.stack([self.forward(ipt[t], order=1) for t in range(self._T)])
+
+        J: Tensor = torch.zeros([self._T, self._nx, self._ntau])
+        for t in range(self._T): J[t] = self.forward(ipt[t], order=1)
+        return J
 
     @abstractmethod
     def _define_state_transition_equation(self, ipt: Tensor, params: Optional[Dict[str, Any]]) -> Tensor:
@@ -61,5 +64,5 @@ class Dynamic(ABC, nn.Module):
         Input:
             ipt: taut
         Output:
-            l(taut), 1-dimension
+            f(taut)[nx, 1]
         '''

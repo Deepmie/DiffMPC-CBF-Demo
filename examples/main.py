@@ -1,10 +1,21 @@
-import numpy as np
-from diffmpc_cbf.solver import SQP
-from diffmpc_cbf.utils import plot_trajectory
+import torch
+from torch import Tensor
+
+def f(x: Tensor) -> Tensor:
+    x1, x2 = x
+    return torch.stack([x1+x2**2, x1, x2])
+
+def test():
+    nx: int = 2
+    nf: int = 3
+    x = torch.rand([nx, ], requires_grad=True)
+    v = f(x)
+    g, = torch.autograd.grad(v[0], [x, ], create_graph=True)
+
+    print(f'x [{x.shape}]: \n{x}')
+    print(f'v [{v.shape}]: \n{v}')
+    print(f'g [{g.shape}]: \n{g}')
+
 
 if __name__ == '__main__':
-    x0   = np.array([[0.], [0.]])
-    xref = np.array([[1.], [0.]])
-    sqp  = SQP()
-    xs   = sqp.solve(x0, xref, total_step=50)
-    plot_trajectory(xs, 'imgs/sqp.png')
+    test()

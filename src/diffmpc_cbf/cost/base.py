@@ -39,8 +39,8 @@ class Cost(ABC):
         Output:
             n-order terminal cost function value in time t
             0: [1]
-            1: [ntau, 1]
-            2: [ntau, ntau]
+            1: [nx, 1]
+            2: [nx, nx]
         '''
         if order == 0:
             return self._terminal_cost_function(xt, params)
@@ -55,12 +55,18 @@ class Cost(ABC):
                 - (x[T+1, nx], u[T, nu])
                 - tau[T+1, ntau]
         '''
-        if len(ipt) == 1: ipt = ipt[0]
-        if torch.is_tensor(ipt): ipt = (ipt[:, :self.nx], ipt[:, self.nx:])
+        if not torch.is_tensor(ipt):
+            if len(ipt) == 2:
+                ipt = torch.concat([
+                    ipt[0],
+                    torch.concat([ipt[1], torch.zeros(1, self._nu)], dim=0) # (T+1, nu)
+                ])
+            elif len(ipt) == 1:
+                ipt = ipt[0]
+        
         J: Tensor = torch.zeros([self._T+1, self._ntau])
-        for t in range(self._T):
-            J[t, :] = self.get_stage_cost((ipt[0][t], ipt[1][t]), params, order=1).flatten()
-        J[self._T, :self._nx] = self.get_terminal_cost(ipt[0][self._T], params, order=1).flatten()
+        for t in range(self._T): J[t] = self.get_stage_cost(ipt[t], params, order=1).flatten()
+        J[self._T, :self._nx] = self.get_terminal_cost(ipt[self._T, :self._nx], params, order=1).flatten()
         return J
     
     def hessian(self, ipt: Union[Tensor, Tuple[Tensor]], params: Optional[Dict[str, Any]]=None) -> Tensor:
