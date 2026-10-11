@@ -70,6 +70,22 @@ class Cost(ABC):
         return J
     
     def hessian(self, ipt: Union[Tensor, Tuple[Tensor]], params: Optional[Dict[str, Any]]=None) -> Tensor:
+        '''
+        Input:
+            ipt have three cases:
+                - (tau[T+1, ntau])
+                - (x[T+1, nx], u[T, nu])
+                - tau[T+1, ntau]
+        '''
+        if not torch.is_tensor(ipt):
+            if len(ipt) == 2:
+                ipt = torch.concat([
+                    ipt[0],
+                    torch.concat([ipt[1], torch.zeros(1, self._nu)], dim=0) # (T+1, nu)
+                ])
+            elif len(ipt) == 1:
+                ipt = ipt[0]
+        
         H: Tensor = torch.zeros([self._T+1, self._ntau, self._ntau])
         for t in range(self._T):
             H[t, :, :] = self.get_stage_cost((ipt[0][t], ipt[1][t]), params, order=2)
