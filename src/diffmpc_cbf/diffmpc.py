@@ -83,8 +83,7 @@ class DiffMPC:
 
         # cost Jacobian
         Jl = self._cost.jacobian(_tau, params).reshape(-1)[:self._var_dims] # (_var_dim, )
-
-
+        
         # cost Hessian
         Hl = self._cost.hessian(_tau, params).reshape()
         for t in range(self._T+1):
