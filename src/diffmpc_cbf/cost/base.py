@@ -24,7 +24,7 @@ class Cost(ABC):
             2: [ntau, ntau]
         '''
         if not torch.is_tensor(ipt):
-            if len(ipt) == 2: ipt = torch.concat([ipt[0], ipt[1]]) # (ntau, )
+            if len(ipt) == 2: ipt = torch.concat([ipt[0], ipt[1]], dim=0) # (ntau, 1)
             elif len(ipt) == 1: ipt = ipt[0]
 
         if order == 0:
@@ -65,8 +65,8 @@ class Cost(ABC):
                 ipt = ipt[0]
         
         J: Tensor = torch.zeros([self._T+1, self._ntau])
-        for t in range(self._T): J[t] = self.get_stage_cost(ipt[t], params, order=1).flatten()
-        J[self._T, :self._nx] = self.get_terminal_cost(ipt[self._T, :self._nx], params, order=1).flatten()
+        for t in range(self._T): J[t] = self.get_stage_cost(ipt[t].unsqueeze(-1), params, order=1).flatten()
+        J[self._T, :self._nx] = self.get_terminal_cost(ipt[self._T, :self._nx].unsqueeze(-1), params, order=1).flatten()
         return J # (T+1, ntau)
     
     def hessian(self, ipt: Union[Tensor, Tuple[Tensor]], params: Optional[Dict[str, Any]]=None) -> Tensor:
@@ -88,7 +88,7 @@ class Cost(ABC):
         
         H: Tensor = torch.zeros([self._T+1, self._ntau, self._ntau])
         for t in range(self._T):
-            H[t, :, :] = self.get_stage_cost((ipt[0][t], ipt[1][t]), params, order=2)
+            H[t, :, :] = self.get_stage_cost(ipt[t], params, order=2)
         H[self._T, :self._nx, :self._nx] = self.get_terminal_cost(ipt[0][self._T], params, order=2)
         return H
 
