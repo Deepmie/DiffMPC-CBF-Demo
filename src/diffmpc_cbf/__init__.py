@@ -1,6 +1,7 @@
 from .cost import Cost, QuadCost
 from .dynamic import Dynamic, LinDynamic
-from .base import MetricFunction, iLQRMetricFunction, Tau
+from .metricsfunc import MetricFunction, iLQRMetricFunction
+from .base import Tau
 from .diffmpc import DiffMPC
 
 def main() -> None:

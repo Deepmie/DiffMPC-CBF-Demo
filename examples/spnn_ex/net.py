@@ -6,6 +6,7 @@ class ContextNetwork(nn.Module):
     def __init__(self, context_dim: int=3):
         '''
         this network accept three input: (pref, vref, t)
+        Pipline: (b, 3) --> (b, 3) 
         '''
         super().__init__()
         self._net = nn.Sequential(

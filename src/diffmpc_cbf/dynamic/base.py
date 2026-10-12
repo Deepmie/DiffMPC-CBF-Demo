@@ -3,15 +3,14 @@ from typing import Dict, Tuple, Union, Optional, Any
 import torch
 from torch import Tensor
 import torch.nn as nn
-from ..base import DerivativesFunctionWrapper
+from ..base.derivatives import DerivativesFunctionWrapper
 
 class Dynamic(ABC, nn.Module):
     def __init__(self, nx: int, nu: int, T: int):
         super().__init__()
         self._nx = nx; self._nu = nu; self._T = T; self._ntau = self._nx + self._nu
         self._state_transition_equation = DerivativesFunctionWrapper(self._define_state_transition_equation)
-
-    @abstractmethod
+    
     def forward(self, ipt: Union[Tensor, Tuple[Tensor]], params: Optional[Dict[str, Any]], order: int=0) -> Tensor:
         '''
         Input:
@@ -32,7 +31,7 @@ class Dynamic(ABC, nn.Module):
         if order == 0:
             return self._state_transition_equation(ipt, params)
         elif order == 1 or order == 2:
-            return self._state_transition_equation.derivatives(ipt, params, ord=ord)
+            return self._state_transition_equation.derivatives(ipt, params, order=order)
         
 
     def jacobian(self, ipt: Union[Tensor, Tuple[Tensor]]) -> Tensor:

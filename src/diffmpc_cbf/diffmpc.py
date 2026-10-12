@@ -1,5 +1,5 @@
-from . import Cost, Dynamic
-from .base import Tau, MetricFunction
+from . import Cost, Dynamic, MetricFunction
+from .base import Tau
 from .utils import *
 import torch
 from torch import Tensor
