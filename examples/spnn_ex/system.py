@@ -12,16 +12,18 @@ class SpnnCost(Cost):
     def _define_stage_cost_function(self, ipt: Tensor, params: Dict[str, Tensor]) -> Tensor:
         pt, vt, ut = ipt[0], ipt[1], ipt[2]
         pref, vref = params.get('xref')
-        ctx = torch.stack([1/2*(pt-pref)**2, 1/2*(vt-vref)**2, 0.05*ut**2]).flatten() # (3, )
+        t = torch.tensor([params.get('t'), ])
+        ctx = torch.stack([pref, vref, t]).flatten()
         hid: Tensor = self.context_network(ctx) # (3, )
-        return hid.sum() + 0.02*(pt-pref)**4
+        return hid[0]*1/2*(pt-pref)**2 + hid[1]*1/2*(vt-vref)**2 + hid[2]*0.05*ut**2 + 0.02*(pt-pref)**4
     
     def _define_terminal_cost_function(self, xt: Tensor, params: Dict[str, Tensor]) -> Tensor:
         pt, vt = xt[0], xt[1]
         pref, vref = params.get('xref')
-        ctx = torch.stack([5*(pt-pref)**2, 5*(vt-vref)**2, torch.zeros([1, ])]).flatten() # (3, )
-        hid: Tensor = self.context_network(ctx)
-        return hid.sum() + 0.2*(pt-pref)**4
+        t = torch.tensor([params.get('t'), ])
+        ctx = torch.stack([pref, vref, t]).flatten()
+        hid: Tensor = self.context_network(ctx) # (3, )
+        return hid[0]*5*(pt-pref)**2 + hid[1]*5*(vt-vref)**2 + 0.2*(pt-pref)**4
 
 
 class SpnnDynamic(Dynamic):

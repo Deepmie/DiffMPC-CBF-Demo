@@ -117,10 +117,17 @@ class DiffMPC:
             g[(self._T+t)*self._nu: (self._T+t+1)*self._nu] = _tau.get_control(t).flatten() - self._umin
         
         return Hl, Jl, G, g, Jh, -Hh
-        
 
     def _qp_var_post_process(self, vs: List[Tensor]) -> List[Tensor]:
         return [v.flatten() for v in vs]
     
     def _get_init_dveq(self) -> Tensor:
         return torch.zeros([(self._T+1)*self._nx, ])
+
+    @property
+    def cost(self):
+        return self._cost
+
+    @property
+    def dynamic(self):
+        return self._dynamic

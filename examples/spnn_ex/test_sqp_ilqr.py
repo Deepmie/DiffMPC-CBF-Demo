@@ -27,12 +27,18 @@ def main():
     # solve one step mpc
     x0 = torch.tensor([[0.], [0.]])
     xs = torch.zeros([N, nx]); xs[0] = x0.flatten()
+
+    netparams = list(cost.context_network.parameters())
     for t in range(1, N):
         tau = mpc.step(xs[t-1], {'cost': {'xref': xref}})
         u = tau.u.view(-1)
         # dl_dC = torch.zeros([nl, T+1, ntau, ntau])
         # dl_dc = torch.zeros([nl, T+1, ntau])
         # dl_dF = torch.zeros([nl, T, nx, ntau])
+        dl_dw = torch.zeros([nl, 8, 3])
+        for i in range(nl):
+            dl_dw[i] = torch.autograd.grad(u[i], netparams, retain_graph=True)[0]
+        print(dl_dw)
         # for i in range(nl):
         #     dl_dCi, dl_dci, dl_dFi = torch.autograd.grad(u[i], [C, c, F], retain_graph=True)
         #     dl_dC[i] = dl_dCi; dl_dc[i] = dl_dci; dl_dF[i] = dl_dFi
@@ -52,8 +58,10 @@ def main():
         #     return 1/N * torch.sum((t1-t2)**2).sqrt().item()
 
         # print(f'dl_dC: {mc_func(dl_dC, dl_dC_lqr)}/{nl*(T+1)*ntau*ntau}, dl_dc: {mc_func(dl_dc, dl_dc_lqr)}/{nl*(T+1)*ntau}, dl_dF: {mc_func(dl_dF, dl_dF_lqr)}/{nl*T*ntau}')
+        input('finished')
         xs[t]  = dynamic.forward((xs[t-1], tau.u[0]), {'t': 0}).flatten()
 
+    # plot_trajectory(xs.detach().numpy())
 
 if __name__ == '__main__':
     main()
