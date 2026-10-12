@@ -75,31 +75,28 @@ class DiffMPC:
             params: Optional[Dict[str, Tensor]]
         ) -> Tuple[Tensor]:
         Jl: Tensor  = torch.zeros([self._var_dims])
-        H: Tensor  = torch.zeros([self._var_dims, self._var_dims])
+        Hl: Tensor  = torch.zeros([self._var_dims, self._var_dims])
         Jh: Tensor = torch.zeros([(self._T+1)*self._nx, self._var_dims])
-        h: Tensor  = torch.zeros([(self._T+1)*self._nx])
+        Hh: Tensor  = torch.zeros([(self._T+1)*self._nx])
         G: Tensor  = torch.zeros([2*self._nu*self._T, self._var_dims])
         g: Tensor  = torch.zeros([2*self._nu*self._T])
 
         # cost Jacobian
-        Jl = self._cost.jacobian(_tau, params).reshape(-1)[:self._var_dims] # (_var_dim, )
-        
-        # cost Hessian
-        Hl = self._cost.hessian(_tau, params).reshape()
-        for t in range(self._T+1):
-            if t < self._T:
-                H[t*self._ntau: (t+1)*self._ntau, t*self._ntau: (t+1)*self._ntau] = \
-                self._cost.get_stage_cost(_tau[t], {**params.get('cost'), 't': t}, order=2) + \
-                (dveq[(t+1)*self._nx: (t+2)*self._nx].reshape(-1, 1, 1) * self._dynamic.forward(_tau[t], {**params.get('dynamic'), 't': t}, order=2)).sum(axis=0)
-            elif t == self._T:
-                H[t*self._ntau: t*self._ntau+self._nx, t*self._ntau: t*self._ntau+self._nx] = self._cost.get_terminal_cost(_tau.get_state(t), {**params.get('cost'), 't': t}, order=2)
-        # ensure positive matrix
-        H = 0.5 * (H + H.T)
-        eig_min = torch.linalg.eigvalsh(H).min()
-        eps = 1e-6
-        if eig_min < eps: H += (eps-eig_min) * torch.eye(self._var_dims)
+        Jl = self._cost.jacobian(_tau.tau, params.get('cost')).reshape(-1)[:self._var_dims] # (_var_dim, )
 
-        # get Jacobian Matrix for equation
+        # cost Hessian
+        for t in range(self._T):
+            Hl[t*self._ntau: (t+1)*self._ntau, t*self._ntau: (t+1)*self._ntau] = \
+            self._cost.get_stage_cost(_tau[t], {**params.get('cost'), 't': t}, order=2) + \
+            (dveq[(t+1)*self._nx: (t+2)*self._nx].reshape(-1, 1, 1) * self._dynamic.forward(_tau[t], {**params.get('dynamic'), 't': t}, order=2)).sum(axis=0)    
+        Hl[self._T*self._ntau: self._T*self._ntau+self._nx, self._T*self._ntau: self._T*self._ntau+self._nx] = self._cost.get_terminal_cost(_tau.get_state(self._T), {**params.get('cost'), 't': self._T}, order=2)
+        # ensure positive matrix
+        Hl = 0.5 * (Hl + Hl.T)
+        eig_min = torch.linalg.eigvalsh(Hl).min()
+        eps = 1e-6
+        if eig_min < eps: Hl += (eps-eig_min) * torch.eye(self._var_dims)
+
+        # equation Jacobian
         c  = torch.concat([torch.eye(self._nx), torch.zeros([self._nu, self._nx])], axis=0) # (ntau, nx)
         cT = torch.eye(self._nx)
         for t in range(self._T+1):
@@ -107,13 +104,10 @@ class DiffMPC:
             if t < self._T:
                 Jh[(t+1)*self._nx: (t+2)*self._nx, t*self._ntau: (t+1)*self._ntau] = self._dynamic.forward(_tau[t], {**params.get('dynamic'), 't': t}, order=1)
 
-        # get equation Vector
+        # equation Hessian
         for t in range(self._T+1):
-            if t == 0:
-                _dym_term = x0
-            else:
-                _dym_term = self._dynamic.forward(_tau[t-1], {**params.get('dynamic'), 't': t-1})
-            h[t*self._nx: (t+1)*self._nx] = (_dym_term - _tau.get_state(t)).flatten()
+            _state_prev = x0 if t == 0 else self._dynamic.forward(_tau[t-1], {**params.get('dynamic'), 't': t-1})
+            Hh[t*self._nx: (t+1)*self._nx] = (_state_prev - _tau.get_state(t)).flatten()
 
         # set control boundary conditions
         for t in range(self._T):
@@ -122,7 +116,7 @@ class DiffMPC:
             g[t*self._nu: (t+1)*self._nu] = self._umax - _tau.get_control(t).flatten()
             g[(self._T+t)*self._nu: (self._T+t+1)*self._nu] = _tau.get_control(t).flatten() - self._umin
         
-        return H, J, G, g, Jh, -h
+        return Hl, Jl, G, g, Jh, -Hh
         
 
     def _qp_var_post_process(self, vs: List[Tensor]) -> List[Tensor]:

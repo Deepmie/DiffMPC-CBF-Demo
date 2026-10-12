@@ -28,11 +28,8 @@ class MetricFunction:
         # equality residual
         h = torch.zeros([(self._T+1)*self._nx])
         for t in range(self._T+1):
-            if t == 0:
-                _dym_term = x0
-            else:
-                _dym_term = self._dynamic.forward(tau[t-1], {**params.get('dynamic'), 't': t-1})
-            h[t*self._nx: (t+1)*self._nx] = (_dym_term - tau.get_state(t)).flatten()
+            _state_prev = x0 if t == 0 else self._dynamic.forward(tau[t-1], {**params.get('dynamic'), 't': t-1})
+            h[t*self._nx: (t+1)*self._nx] = (_state_prev - tau.get_state(t)).flatten()
 
         _eq_weight = self.eq_weight if dvep is None else max(self.eq_weight, 1.1*torch.max(torch.abs(dvep)))
         metric += _eq_weight * torch.linalg.norm(h, ord=1)
