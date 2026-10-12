@@ -25,38 +25,41 @@ class DiffMPC:
         self._cost = cost; self._dynamic = dynamic; self._umin = umin; self._umax = umax
         self._iter_nums = iter_nums; self._line_search_max_num = line_search_max_num; self._line_search_decay_rate = line_search_decay_rate
         self._metricfunc = MetricFunction(nx, nu, T, self._cost, self._dynamic)
+        self._tau = Tau(self._nx, self._nu, self._T)
 
     def step(self, x0: Tensor, params: Optional[Dict[str, Tensor]]=None) -> Tau:
         if params is None: params = {}
         for key in ['cost', 'dynamic']:
             if key not in params:
                 params[key] = dict()
+
+        if x0.ndimension() == 1: x0 = x0.unsqueeze(-1)
+        
         # iter for searching fix point tau_star
         with torch.no_grad():
-            _tau: Tau    = Tau(self._nx, self._nu, self._T)
-            _tau.set_state_init(x0.flatten())
+            self._tau.set_state_init(x0.flatten())
             dveq: Tensor = self._get_init_dveq()
             for t in range(self._T):
-                _tau.set_state(self._dynamic.forward(_tau[t], {**params.get('dynamic'), 't': t}).flatten(), t+1)
+                self._tau.set_state(self._dynamic.forward(self._tau[t], {**params.get('dynamic'), 't': t}).flatten(), t+1)
             
             for i in range(self._iter_nums):
                 alpha: float = 1.0
-                Q, p, G, h, A, b = self._build_sqp_params(x0, _tau, dveq, params)
+                Q, p, G, h, A, b = self._build_sqp_params(x0, self._tau, dveq, params)
                 tau_delta, dveq_qp, dvneq_qp = QPFunction(eps=1e-12, verbose=0, maxIter=20)(Q, p, G, h, A, b)
                 tau_delta, dveq_qp, dvneq_qp = self._qp_var_post_process([tau_delta, dveq_qp, dvneq_qp])
                 tau_delta = Tau.build_from_tensor(tau_delta, self._nx, self._ntau)
                 dveq_delta = dveq_qp - dveq
 
                 for j in range(self._line_search_max_num):
-                    if self._metricfunc(_tau + alpha*tau_delta, x0.flatten(), params, dveq_qp) < \
-                    self._metricfunc(_tau, x0.flatten(), params, dveq_qp):
+                    if self._metricfunc(self._tau + alpha*tau_delta, x0, params, dveq_qp) < \
+                    self._metricfunc(self._tau, x0, params, dveq_qp):
                         break
                     alpha = self._line_search_decay_rate * alpha
                 # update varible
-                _tau += alpha * tau_delta
+                self._tau += alpha * tau_delta
                 dveq += alpha * dveq_delta
 
-        tau_star = _tau.detach()
+        tau_star = self._tau.detach()
         dveq_star = dveq.detach()
         # solve the last qp
         Q, p, G, h, A, b = self._build_sqp_params(x0, tau_star, dveq_star, params)
@@ -71,21 +74,19 @@ class DiffMPC:
             dveq: Tensor,
             params: Optional[Dict[str, Tensor]]
         ) -> Tuple[Tensor]:
-        J: Tensor  = torch.zeros([self._var_dims])
+        Jl: Tensor  = torch.zeros([self._var_dims])
         H: Tensor  = torch.zeros([self._var_dims, self._var_dims])
         Jh: Tensor = torch.zeros([(self._T+1)*self._nx, self._var_dims])
         h: Tensor  = torch.zeros([(self._T+1)*self._nx])
         G: Tensor  = torch.zeros([2*self._nu*self._T, self._var_dims])
         g: Tensor  = torch.zeros([2*self._nu*self._T])
 
-        # get Jacobian Vector
-        for t in range(self._T+1):
-            if t < self._T:
-                J[t*self._ntau: (t+1)*self._ntau] = self._cost.get_stage_cost(_tau[t], {**params.get('cost'), 't': t}, order=1).flatten()
-            elif t == self._T:
-                J[t*self._ntau: t*self._ntau+self._nx] = self._cost.get_terminal_cost(_tau.get_state(t), {**params.get('cost'), 't': t}, order=1).flatten()
+        # cost Jacobian
+        Jl = self._cost.jacobian(_tau, params).reshape(-1)[:self._var_dims] # (_var_dim, )
 
-        # get Hessian Matrix
+
+        # cost Hessian
+        Hl = self._cost.hessian(_tau, params).reshape()
         for t in range(self._T+1):
             if t < self._T:
                 H[t*self._ntau: (t+1)*self._ntau, t*self._ntau: (t+1)*self._ntau] = \
@@ -113,14 +114,14 @@ class DiffMPC:
                 _dym_term = x0
             else:
                 _dym_term = self._dynamic.forward(_tau[t-1], {**params.get('dynamic'), 't': t-1})
-            h[t*self._nx: (t+1)*self._nx] = _dym_term.flatten() - _tau.get_state(t)
+            h[t*self._nx: (t+1)*self._nx] = (_dym_term - _tau.get_state(t)).flatten()
 
         # set control boundary conditions
         for t in range(self._T):
             G[t*self._nu: (t+1)*self._nu, t*self._ntau+self._nx: (t+1)*self._ntau] = torch.eye(self._nu)
             G[(self._T+t)*self._nu: (self._T+t+1)*self._nu, t*self._ntau+self._nx: (t+1)*self._ntau] = -torch.eye(self._nu)
-            g[t*self._nu: (t+1)*self._nu] = self._umax - _tau.get_control(t)
-            g[(self._T+t)*self._nu: (self._T+t+1)*self._nu] = _tau.get_control(t)-self._umin
+            g[t*self._nu: (t+1)*self._nu] = self._umax - _tau.get_control(t).flatten()
+            g[(self._T+t)*self._nu: (self._T+t+1)*self._nu] = _tau.get_control(t).flatten() - self._umin
         
         return H, J, G, g, Jh, -h
         

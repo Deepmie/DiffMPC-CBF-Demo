@@ -19,6 +19,7 @@ def main():
     umin      = torch.tensor([-10.0])
     umax      = torch.tensor([10.0])
     x0 = torch.tensor([[0.], [0.]], requires_grad=True)
+    xref = torch.tensor([[1.], [0.]], requires_grad=True)
 
     mpc     = DiffMPC(nx, nu, T, 1, cost, dynamic, umin, umax)
     mpc_lqr = iLQRDiffMPC(nx, nu, T, 1, cost, dynamic, umin, umax)
@@ -27,7 +28,7 @@ def main():
     x0 = torch.tensor([[0.], [0.]])
     xs = torch.zeros([N, nx]); xs[0] = x0.flatten()
     for t in range(1, N):
-        tau = mpc.step(xs[t-1], {'cost': {'xref': torch.tensor([[1.], [0.]])}})
+        tau = mpc.step(xs[t-1], {'cost': {'xref': xref}})
         u = tau.u.view(-1)
         # dl_dC = torch.zeros([nl, T+1, ntau, ntau])
         # dl_dc = torch.zeros([nl, T+1, ntau])

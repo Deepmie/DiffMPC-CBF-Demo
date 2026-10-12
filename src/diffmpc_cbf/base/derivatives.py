@@ -24,6 +24,7 @@ class DerivativesFunctionWrapper:
             ipt[nx, 1]
         '''
         with torch.enable_grad():
+            ipt = ipt.detach().requires_grad_()
             value = self.__call__(ipt, params)
             if not self._is_detect: self._detect_function(ipt, value)
 

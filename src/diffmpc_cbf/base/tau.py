@@ -7,10 +7,7 @@ class Tau:
         self._nx = nx; self._nu = nu; self._T = T
         self._ntau = self._nx + self._nu
         self._var_dims = self._T*self._ntau + self._nx
-        self._is_flatten: bool = False
-        self._is_flatten_before_sync: Optional[bool] = None
-        self._sync: bool = False
-        self._build(tau_init)
+        self.reset(tau_init)
 
     @classmethod
     def build_from_tensor(cls, tau: Tensor, nx: int, ntau: Optional[int]=None):
@@ -23,6 +20,12 @@ class Tau:
             tau = tau.reshape(-1, ntau)
             T = tau.shape[0]-1
         return cls(nx, nu, T, tau)
+
+    def reset(self, tau_init: Optional[Tensor]):
+        self._is_flatten: bool = False
+        self._is_flatten_before_sync: Optional[bool] = None
+        self._sync: bool = False
+        self._build(tau_init)
 
     def sync(self, tau_other: 'Tau'):
         self._is_flatten_before_sync = self._is_flatten
@@ -37,11 +40,8 @@ class Tau:
         self._sync = False
 
     def __getitem__(self, t: int) -> Tensor:
-        if self._is_flatten:
-            return self._tau[t*self._ntau: (t+1)*self._ntau] # (ntau, )
-        else:
-            return self._tau[t, :] # (ntau, )
-    
+        return self.get_tau(t)
+
     def __add__(self, tau_other: 'Tau') -> 'Tau':
         tau_other.sync(self)
         _tau = self.tau + tau_other.tau
@@ -65,13 +65,20 @@ class Tau:
         tau_other.recover()
         return self
 
+    def get_tau(self, t: int) -> Tensor:
+        tau = self._tau[t*self._ntau: (t+1)*self._ntau] if self._is_flatten else \
+        self._tau[t]
+        return tau.unsqueeze(-1) # (ntau, 1)
+
     def get_state(self, t: int) -> Tensor:
-        return self._tau[t*self._ntau: t*self._ntau+self._nx] if self._is_flatten else \
+        x = self._tau[t*self._ntau: t*self._ntau+self._nx] if self._is_flatten else \
         self._tau[t, :self._nx]
+        return x.unsqueeze(-1) # (nx, 1)
 
     def get_control(self, t: int) -> Tensor:
-        return self._tau[t*self._ntau+self._nx: (t+1)*self._ntau] if self._is_flatten else \
+        u = self._tau[t*self._ntau+self._nx: (t+1)*self._ntau] if self._is_flatten else \
         self._tau[t, self._nx:]
+        return u.unsqueeze(-1) # (nu, 1)
     
     def set_state_init(self, x0: Tensor): # (nx, )
         self._tau[0, :self._nx] = x0
@@ -81,6 +88,7 @@ class Tau:
         return tau
 
     def set_state(self, x: Tensor, t: int): # (nx, )
+        if x.ndimension() == 2: x = x.flatten()
         if self._is_flatten:
             self._tau[t*self._ntau: t*self._ntau+self._nx] = x
         else:
@@ -88,6 +96,7 @@ class Tau:
         return x
 
     def set_control(self, u: Tensor, t: int): # (nu, )
+        if u.ndimension() == 2: u = u.flatten()
         if self._is_flatten:
             self._tau[t*self._ntau+self._nx: (t+1)*self._ntau] = u
         else:
@@ -109,6 +118,9 @@ class Tau:
         if is_clip: self._tau = torch.concat([self._tau, torch.zeros(self._nu)])
         self._tau = self._tau.reshape(self._T+1, self._ntau)
         return self._tau
+
+    def require_grad_(self, mode: bool=True) -> Tensor:
+        return self._tau.requires_grad_(mode)
 
     def detach(self) -> Tensor:
         self._tau = self._tau.detach()

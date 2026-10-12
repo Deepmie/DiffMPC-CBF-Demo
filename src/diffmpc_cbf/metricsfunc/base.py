@@ -13,7 +13,7 @@ class MetricFunction:
 
     def __call__(
             self,
-            tau,
+            tau: Tau,
             x0: Tensor,
             params: Optional[Dict[str, Any]]=None,
             dvep: Optional[Tensor]=None
@@ -32,7 +32,7 @@ class MetricFunction:
                 _dym_term = x0
             else:
                 _dym_term = self._dynamic.forward(tau[t-1], {**params.get('dynamic'), 't': t-1})
-            h[t*self._nx: (t+1)*self._nx] = _dym_term.flatten() - tau.get_state(t)
+            h[t*self._nx: (t+1)*self._nx] = (_dym_term - tau.get_state(t)).flatten()
 
         _eq_weight = self.eq_weight if dvep is None else max(self.eq_weight, 1.1*torch.max(torch.abs(dvep)))
         metric += _eq_weight * torch.linalg.norm(h, ord=1)

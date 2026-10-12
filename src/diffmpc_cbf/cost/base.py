@@ -67,7 +67,7 @@ class Cost(ABC):
         J: Tensor = torch.zeros([self._T+1, self._ntau])
         for t in range(self._T): J[t] = self.get_stage_cost(ipt[t], params, order=1).flatten()
         J[self._T, :self._nx] = self.get_terminal_cost(ipt[self._T, :self._nx], params, order=1).flatten()
-        return J
+        return J # (T+1, ntau)
     
     def hessian(self, ipt: Union[Tensor, Tuple[Tensor]], params: Optional[Dict[str, Any]]=None) -> Tensor:
         '''
