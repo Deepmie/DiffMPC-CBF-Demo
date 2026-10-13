@@ -17,3 +17,17 @@ class ContextNetwork(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         return nn.functional.softplus(self._net(x)) + 1e-3
+
+
+class ResidualNetwork(nn.Module):
+    def __init__(self, nx: int, nu: int):
+        super().__init__()
+        self._net = nn.Sequential(
+            nn.Linear(nx+nu, 8),
+            nn.Tanh(),
+            nn.Linear(8, 2),
+        )
+
+    def forward(self, x: Tensor) -> Tensor: # (ntau, )
+        return self._net(x) # (2, )
+

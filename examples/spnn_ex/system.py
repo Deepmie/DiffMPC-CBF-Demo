@@ -2,7 +2,7 @@ from diffmpc_cbf import Cost, Dynamic
 from typing import Dict, Tuple, Union, Optional
 import torch
 from torch import Tensor
-from net import ContextNetwork
+from net import ContextNetwork, ResidualNetwork
 
 class SpnnCost(Cost):
     def __init__(self, nx: int, nu: int, T: int, context_dim: int=3):
@@ -27,10 +27,16 @@ class SpnnCost(Cost):
 
 
 class SpnnDynamic(Dynamic):
-    def __init__(self, nx: int, nu: int, T: int, delta_t: float):
+    def __init__(self, nx: int, nu: int, T: int, delta_t: float, eps: float=1e-1):
         super().__init__(nx, nu, T)
-        self._delta_t = delta_t
+        self._delta_t = delta_t; self._eps = eps
+        self.residual_network = ResidualNetwork(nx, nu)
     
-    def _define_state_transition_equation(self, ipt: Tensor, params=None):
+    def _define_state_transition_equation(self, ipt: Tensor, params=None): # (3, 1)
         pt, vt, ut = ipt
-        return torch.stack([pt+self._delta_t*vt, vt+self._delta_t*(ut-0.1*vt**3)])
+        _res: Tensor = self.residual_network(torch.stack([pt, vt, ut]).flatten()) # (2, )
+        _res = _res.square().sum()
+        return torch.stack([
+            pt+self._delta_t*vt,
+            vt+self._delta_t*(ut-0.1*vt**3+self._eps*_res)
+        ])

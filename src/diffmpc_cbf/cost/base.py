@@ -57,18 +57,20 @@ class Cost(ABC):
         '''
         if not torch.is_tensor(ipt):
             if len(ipt) == 2:
-                ipt = torch.concat([
-                    ipt[0],
-                    torch.concat([ipt[1], torch.zeros(1, self._nu)], dim=0) # (T+1, nu)
-                ])
+                x, u = ipt
+                u_pad = torch.concat([u, torch.zeros(1, self._nu, dtype=u.dtype, device=u.device)], dim=0)
+                ipt = torch.concat([x, u_pad], dim=1)  # (T+1, ntau)
             elif len(ipt) == 1:
                 ipt = ipt[0]
-        
+
         J: Tensor = torch.zeros([self._T+1, self._ntau])
-        for t in range(self._T): J[t] = self.get_stage_cost(ipt[t].unsqueeze(-1), {**params, 't': t}, order=1).flatten()
-        J[self._T, :self._nx] = self.get_terminal_cost(ipt[self._T, :self._nx].unsqueeze(-1), {**params, 't': self._T}, order=1).flatten()
+        for t in range(self._T):
+            J[t] = self.get_stage_cost(ipt[t].unsqueeze(-1), {**params, 't': t}, order=1).flatten()
+        J[self._T, :self._nx] = self.get_terminal_cost(
+            ipt[self._T, :self._nx].unsqueeze(-1), {**params, 't': self._T}, order=1
+        ).flatten()
         return J # (T+1, ntau)
-    
+
     def hessian(self, ipt: Union[Tensor, Tuple[Tensor]], params: Optional[Dict[str, Any]]=None) -> Tensor:
         '''
         Input:
@@ -79,17 +81,18 @@ class Cost(ABC):
         '''
         if not torch.is_tensor(ipt):
             if len(ipt) == 2:
-                ipt = torch.concat([
-                    ipt[0],
-                    torch.concat([ipt[1], torch.zeros(1, self._nu)], dim=0) # (T+1, nu)
-                ])
+                x, u = ipt
+                u_pad = torch.concat([u, torch.zeros(1, self._nu, dtype=u.dtype, device=u.device)], dim=0)
+                ipt = torch.concat([x, u_pad], dim=1)  # (T+1, ntau)
             elif len(ipt) == 1:
                 ipt = ipt[0]
-        
+
         H: Tensor = torch.zeros([self._T+1, self._ntau, self._ntau])
         for t in range(self._T):
-            H[t, :, :] = self.get_stage_cost(ipt[t], {**params, 't': t}, order=2)
-        H[self._T, :self._nx, :self._nx] = self.get_terminal_cost(ipt[0][self._T], {**params, 't': self._T}, order=2)
+            H[t, :, :] = self.get_stage_cost(ipt[t].unsqueeze(-1), {**params, 't': t}, order=2)
+        H[self._T, :self._nx, :self._nx] = self.get_terminal_cost(
+            ipt[self._T, :self._nx].unsqueeze(-1), {**params, 't': self._T}, order=2
+        )
         return H
 
     @abstractmethod
