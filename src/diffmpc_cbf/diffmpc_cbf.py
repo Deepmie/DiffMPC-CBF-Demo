@@ -11,6 +11,7 @@ class DiffMPCBF:
         self,
         nx: int,
         nu: int,
+        nb: int,
         T: int,
         batch_size: int,
         cost: Cost,
@@ -21,7 +22,7 @@ class DiffMPCBF:
         line_search_max_num: int=5,
         line_search_decay_rate: float=0.5,
     ):
-        self._nx = nx; self._nu = nu; self._T = T; self._batch_size = batch_size; self._ntau = self._nx + self._nu; self._var_dims = self._T*self._ntau+self._nx
+        self._nx = nx; self._nu = nu; self._nb = nb; self._T = T; self._batch_size = batch_size; self._ntau = self._nx + self._nu; self._var_dims = self._T*self._ntau+self._nx
         self._cost = cost; self._dynamic = dynamic; self._umin = umin; self._umax = umax
         self._iter_nums = iter_nums; self._line_search_max_num = line_search_max_num; self._line_search_decay_rate = line_search_decay_rate
         self._metricfunc = MetricFunction(nx, nu, T, self._cost, self._dynamic)
@@ -74,10 +75,11 @@ class DiffMPCBF:
             dveq: Tensor,
             params: Optional[Dict[str, Tensor]]
         ) -> Tuple[Tensor]:
-        Jl: Tensor  = torch.zeros([self._var_dims])
-        Hl: Tensor  = torch.zeros([self._var_dims, self._var_dims])
+        Jl: Tensor = torch.zeros([self._var_dims])
+        Hl: Tensor = torch.zeros([self._var_dims, self._var_dims])
         Jh: Tensor = torch.zeros([(self._T+1)*self._nx, self._var_dims])
-        Hh: Tensor  = torch.zeros([(self._T+1)*self._nx])
+        h: Tensor = torch.zeros([(self._T+1)*self._nx])
+        Jg1: Tensor =  torch.zeros([(self._T)*self._nb, ])
         G: Tensor  = torch.zeros([2*self._nu*self._T, self._var_dims])
         g: Tensor  = torch.zeros([2*self._nu*self._T])
 
@@ -104,10 +106,13 @@ class DiffMPCBF:
             if t < self._T:
                 Jh[(t+1)*self._nx: (t+2)*self._nx, t*self._ntau: (t+1)*self._ntau] = self._dynamic.forward(_tau[t], {**params.get('dynamic'), 't': t}, order=1)
         
-        # equation Hessian
+        # equation function
         for t in range(self._T+1):
             _state_prev = x0 if t == 0 else self._dynamic.forward(_tau[t-1], {**params.get('dynamic'), 't': t-1})
-            Hh[t*self._nx: (t+1)*self._nx] = (_state_prev - _tau.get_state(t)).flatten()
+            h[t*self._nx: (t+1)*self._nx] = (_state_prev - _tau.get_state(t)).flatten()
+
+        # inequation Jacobian
+
 
         # set control boundary conditions
         for t in range(self._T):
@@ -116,7 +121,7 @@ class DiffMPCBF:
             g[t*self._nu: (t+1)*self._nu] = self._umax - _tau.get_control(t).flatten()
             g[(self._T+t)*self._nu: (self._T+t+1)*self._nu] = _tau.get_control(t).flatten() - self._umin
         
-        return Hl, Jl, G, g, Jh, -Hh
+        return Hl, Jl, G, g, Jh, -h
 
     def _qp_var_post_process(self, vs: List[Tensor]) -> List[Tensor]:
         return [v.flatten() for v in vs]

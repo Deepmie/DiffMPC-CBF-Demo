@@ -1,5 +1,5 @@
-from diffmpc_cbf import Cost, Dynamic
-from typing import Dict, Tuple, Union, Optional
+from diffmpc_cbf import Cost, Dynamic, Barrier
+from typing import List, Dict, Tuple, Union, Optional
 import torch
 from torch import Tensor
 from net import ContextNetwork, ResidualNetwork
@@ -40,3 +40,12 @@ class SpnnDynamic(Dynamic):
             pt+self._delta_t*vt,
             vt+self._delta_t*(ut-0.1*vt**3+self._eps*_res)
         ])
+
+class SpnnBarrier(Barrier):
+    def __init__(self, nx: int, nu: int, T: int):
+        super().__init__(nx, nu, T)
+
+    def _define_barrier_function(self, xt: Tensor, params: Dict[str, List[Tensor]]) -> Tensor:
+        pt, vt = xt
+        obs: List[Tensor] = params.get('obs')
+        return torch.stack([(pt-o[0])**2 + (pt-o[1])**2 - o[2]**2 for o in obs])
