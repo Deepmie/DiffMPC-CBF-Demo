@@ -148,6 +148,7 @@ class DiffMPCBF:
             if t == self._T: Hl[self._T*self._ntau: self._var_dims, self._T*self._ntau, self._var_dims] = self._cost.get_terminal_cost(_tau.get_state(self._T), {**params.get('cost'), 't': self._T}, order=2)
 
             # equation Jacobian
+            
 
 
 
