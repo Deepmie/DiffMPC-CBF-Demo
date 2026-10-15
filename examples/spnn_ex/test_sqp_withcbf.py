@@ -28,6 +28,7 @@ def main():
     x0 = torch.tensor([[0.], [0.]], requires_grad=True)
     xref = torch.tensor([[1.], [0.]], requires_grad=True)
     obs: List[ndarray] = [np.array([0.5, 0.5, 0.3, 0.02]), ]
+    gamma: float = 0.5
 
     mpc = DiffMPCBF(
         nx = nx,
@@ -50,7 +51,11 @@ def main():
     fp = list(dynamic.residual_network.parameters())
 
     for t in range(1, N):
-        tau = mpc.step(xs[t-1], {'cost': {'xref': xref}})
+        params = {
+            'cost': {'xref': xref},
+            'barrier': {'obs': obs, 'gamma': gamma, },
+        }
+        tau = mpc.step(xs[t-1], params)
         # u = tau.u.view(-1)
         # dl_dcp = [torch.zeros([nl, *list(p.shape)]) for p in cp]
         # dl_dfp = [torch.zeros([nl, *list(p.shape)]) for p in fp]
@@ -59,7 +64,6 @@ def main():
         #     grad_fp = torch.autograd.grad(u[i], fp, retain_graph=True)
         #     for j in range(len(dl_dcp)): dl_dcp[j][i] = grad_cp[j]
         #     for j in range(len(dl_dfp)): dl_dfp[j][i] = grad_fp[j]
-        
         xs[t]  = dynamic.forward((xs[t-1], tau.u[0]), {'t': 0}).flatten()
 
     # plot_trajectory(xs.detach().numpy())

@@ -41,16 +41,18 @@ class DiffMPCBF:
         with torch.no_grad():
             self._tau.set_state_init(x0.flatten())
             dveq: Tensor = self._get_init_dveq()
+            dvneq: Tensor = self._get_init_dvneq()
             for t in range(self._T):
                 self._tau.set_state(self._dynamic.forward(self._tau[t], {**params.get('dynamic'), 't': t}).flatten(), t+1)
             
             for i in range(self._iter_nums):
                 alpha: float = 1.0
-                Q, p, G, h, A, b = self._build_sqp_params(x0, self._tau, dveq, params)
+                Q, p, G, h, A, b = self._build_sqp_params(x0, self._tau, dveq, dvneq, params)
                 tau_delta, dveq_qp, dvneq_qp = QPFunction(eps=1e-12, verbose=0, maxIter=20)(Q, p, G, h, A, b)
                 tau_delta, dveq_qp, dvneq_qp = self._qp_var_post_process([tau_delta, dveq_qp, dvneq_qp])
                 tau_delta = Tau.build_from_tensor(tau_delta, self._nx, self._ntau)
                 dveq_delta = dveq_qp - dveq
+                dvneq_delta = dvneq_qp - dvneq
 
                 for j in range(self._line_search_max_num):
                     if self._metricfunc(self._tau + alpha*tau_delta, x0, params, dveq_qp) < \
@@ -60,11 +62,13 @@ class DiffMPCBF:
                 # update varible
                 self._tau += alpha * tau_delta
                 dveq += alpha * dveq_delta
+                dvneq += alpha * dvneq_delta
 
         tau_star = self._tau.detach()
         dveq_star = dveq.detach()
+        dvneq_star = dvneq.detach()
         # solve the last qp
-        Q, p, G, h, A, b = self._build_sqp_params(x0, tau_star, dveq_star, params)
+        Q, p, G, h, A, b = self._build_sqp_params(x0, tau_star, dveq_star, dvneq_star, params)
         tau_delta, _, _ = QPFunction(eps=1e-12, verbose=0, maxIter=20)(Q, p, G, h, A, b); tau_delta = cast(Tensor, tau_delta)
         tau_delta = Tau.build_from_tensor(tau_delta.flatten(), self._nx, self._ntau)
         return tau_star + tau_delta
@@ -74,7 +78,7 @@ class DiffMPCBF:
             x0: Tensor,
             _tau: Tau,
             dveq: Tensor,
-            dvieq: Tensor,
+            dvneq: Tensor,
             params: Optional[Dict[str, Dict[str, Any]]]
         ) -> Tuple[Tensor]:
         Jl: Tensor          = torch.zeros([self._var_dims])
@@ -100,8 +104,8 @@ class DiffMPCBF:
             # cost Hessian
             Hl[t*self._ntau: (t+1)*self._ntau, t*self._ntau: (t+1)*self._ntau] = \
             self._cost.get_stage_cost(_tau[t], {**params.get('cost'), 't': t}, order=2) + \
-            (dveq[(t+1)*self._nx: (t+2)*self._nx].reshape(-1, 1, 1) * self._dynamic.forward(_tau[t], {**params.get('dynamic'), 't': t}, order=2)).sum(dim=0) + \
-            ...
+            (dveq[(t+1)*self._nx: (t+2)*self._nx].reshape(-1, 1, 1) * self._dynamic.forward(_tau[t], {**params.get('dynamic'), 't': t}, order=2)).sum() + \
+            (dvneq[t*self._nb: (t+1)*self._nb].reshape(-1, 1, 1) * -(1-gamma)* cx.unsqueeze(0) @ self._barrier.forward(_tau.get_state(t), {**params.get('barrier'), 't': t}, order=2) @ cx.T.unsqueeze(0)).sum()
             if t == self._T: Hl[self._T*self._ntau: self._var_dims, self._T*self._ntau, self._var_dims] = self._cost.get_terminal_cost(_tau.get_state(self._T), {**params.get('cost'), 't': self._T}, order=2)
 
             # equation Jacobian
@@ -141,6 +145,9 @@ class DiffMPCBF:
     
     def _get_init_dveq(self) -> Tensor:
         return torch.zeros([(self._T+1)*self._nx, ])
+
+    def _get_init_dvneq(self) -> Tensor:
+        return torch.zeros([self._T*(self._nb+2*self._nu), ])
 
     @property
     def cost(self):
