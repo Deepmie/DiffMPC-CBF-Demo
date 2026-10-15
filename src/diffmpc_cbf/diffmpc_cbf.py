@@ -120,7 +120,7 @@ class DiffMPCBF:
                 g_cbf[t*self._nb: (t+1)*self._nb] = self._barrier.forward(_tau.get_state(t+1), {**barrier_params, 't': t+1}).flatten() - (1-gamma)*self._barrier.forward(_tau.get_state(t), {**barrier_params, 't': t}).flatten()
 
                 # inequation of boundary Jacobian
-                Jg_boundary[t*2*self._nu: (t+1)*2*self._nu, t*self._ntau: (t+1)*self._ntau] = torch.concat([cu.T, -cu.T], dim=0)
+                Jg_boundary[t*2*self._nu: (t+1)*2*self._nu, t*self._ntau: (t+1)*self._ntau] = torch.concat([-cu.T, cu.T], dim=0)
                 # inequation of boundary function
                 g_boundary[t*2*self._nu: (t+1)*2*self._nu] = torch.concat([self._umax-_tau.get_control(t).flatten(), _tau.get_control(t).flatten()-self._umin]) # (2*nu, )
 
@@ -133,8 +133,8 @@ class DiffMPCBF:
 
         # merge inequation Jacobian & function
         Jg = torch.concat([Jg_cbf, Jg_boundary], dim=0)
-        
-        # return Hl, Jl, G, g, Jh, -h
+        g = torch.concat([g_cbf, g_boundary], dim=0)
+        return Hl, Jl, Jg, -g, Jh, -h
 
     def _qp_var_post_process(self, vs: List[Tensor]) -> List[Tensor]:
         return [v.flatten() for v in vs]

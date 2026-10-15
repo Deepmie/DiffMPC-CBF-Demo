@@ -4,6 +4,7 @@ from .barrier import Barrier
 from .metricsfunc import MetricFunction, iLQRMetricFunction
 from .base import Tau
 from .diffmpc import DiffMPC
+from .diffmpc_cbf import DiffMPCBF
 
 def main() -> None:
     print("Hello from diffmpc-cbf!")
