@@ -86,55 +86,12 @@ class DiffMPCBF:
         Jg_boundary: Tensor = torch.zeros([self._T*2*self._nu, self._var_dims])
         g_boundary: Tensor  = torch.zeros([self._T*2*self._nu])
 
-        # cost Jacobian
-        Jl = self._cost.jacobian(_tau.tau, params.get('cost')).reshape(-1)[:self._var_dims] # (_var_dim, )
-
-        # cost Hessian
-        for t in range(self._T):
-            Hl[t*self._ntau: (t+1)*self._ntau, t*self._ntau: (t+1)*self._ntau] = \
-            self._cost.get_stage_cost(_tau[t], {**params.get('cost'), 't': t}, order=2) + \
-            (dveq[(t+1)*self._nx: (t+2)*self._nx].reshape(-1, 1, 1) * self._dynamic.forward(_tau[t], {**params.get('dynamic'), 't': t}, order=2)).sum(axis=0)    
-        Hl[self._T*self._ntau: self._T*self._ntau+self._nx, self._T*self._ntau: self._T*self._ntau+self._nx] = self._cost.get_terminal_cost(_tau.get_state(self._T), {**params.get('cost'), 't': self._T}, order=2)
-        # ensure positive matrix
-        Hl = 0.5 * (Hl + Hl.T)
-        eig_min = torch.linalg.eigvalsh(Hl).min()
-        eps = 1e-6
-        if eig_min < eps: Hl += (eps-eig_min) * torch.eye(self._var_dims)
-        
-        # equation Jacobian
-        c: Tensor  = torch.concat([torch.eye(self._nx), torch.zeros([self._nu, self._nx])], axis=0) # (ntau, nx)
-        cT: Tensor = torch.eye(self._nx)
-        for t in range(self._T+1):
-            Jh[t*self._nx: (t+1)*self._nx, t*self._ntau: (t+1)*self._ntau] = -c.T if t < self._T else -cT.T
-            if t < self._T:
-                Jh[(t+1)*self._nx: (t+2)*self._nx, t*self._ntau: (t+1)*self._ntau] = self._dynamic.forward(_tau[t], {**params.get('dynamic'), 't': t}, order=1)
-        
-        # equation function
-        for t in range(self._T+1):
-            _state_prev = x0 if t == 0 else self._dynamic.forward(_tau[t-1], {**params.get('dynamic'), 't': t-1})
-            h[t*self._nx: (t+1)*self._nx] = (_state_prev - _tau.get_state(t)).flatten()
-
-        # inequation of CBF Jacobian
+        # build aux variable
+        cx: Tensor  = torch.concat([torch.eye(self._nx), torch.zeros([self._nu, self._nx])], dim=0) # (ntau, nx)
+        cxT: Tensor = torch.eye(self._nx)
+        cu: Tensor  = torch.concat([torch.zeros([self._nx, self._nu]), torch.eye(self._nu)], dim=0) # (ntau, nu)
         barrier_params: Dict = params.get('barrier')
         gamma: float = barrier_params.get('gamma')
-        for t in range(self._T):
-            Jg_cbf[t*self._nb: (t+1)*self._nb, t*self._ntau: (t+1)*self._ntau] = -(1-gamma) * self._barrier.forward(_tau.get_state(t), {**barrier_params, 't': t}, order=1) @ c.T
-            Jg_cbf[t*self._nb: (t+1)*self._nb, (t+1)*self._ntau: (t+2)*self._ntau] = self._barrier.forward(_tau.get_state(t+1), {**barrier_params, 't': t+1}, order=1) @ (c.T if t < self._T-1 else cT.T)
-
-        # inequation of CBF function
-        for t in range(self._T):
-            g_cbf[t*self._nb: (t+1)*self._nb] = self._barrier.forward(_tau.get_state(t), {**barrier_params, 't': t}).flatten()
-        
-        # set control boundary conditions
-        for t in range(self._T):
-            Jg_boundary[t*self._nu: (t+1)*self._nu, t*self._ntau+self._nx: (t+1)*self._ntau] = torch.eye(self._nu)
-            Jg_boundary[(self._T+t)*self._nu: (self._T+t+1)*self._nu, t*self._ntau+self._nx: (t+1)*self._ntau] = -torch.eye(self._nu)
-            g_boundary[t*self._nu: (t+1)*self._nu] = self._umax - _tau.get_control(t).flatten()
-            g_boundary[(self._T+t)*self._nu: (self._T+t+1)*self._nu] = _tau.get_control(t).flatten() - self._umin
-
-        # build aux variable
-        c: Tensor  = torch.concat([torch.eye(self._nx), torch.zeros([self._nu, self._nx])], axis=0) # (ntau, nx)
-        cT: Tensor = torch.eye(self._nx)
         for t in range(self._T+1):
             # cost Jacobian
             Jl[t*self._ntau: (t+1)*self._ntau] = self._cost.get_stage_cost(_tau[t], {**params.get('cost'), 't': t}, order=1).flatten()
@@ -148,11 +105,36 @@ class DiffMPCBF:
             if t == self._T: Hl[self._T*self._ntau: self._var_dims, self._T*self._ntau, self._var_dims] = self._cost.get_terminal_cost(_tau.get_state(self._T), {**params.get('cost'), 't': self._T}, order=2)
 
             # equation Jacobian
-            
+            Jh[t*self._nx: (t+1)*self._nx, t*self._ntau: (t+1)*self._ntau] = -cx.T if t < self._T else -cxT.T
+            if t < self._T: Jh[(t+1)*self._nx: (t+1)*self._nx, t*self._ntau: (t+1)*self._ntau] = self._dynamic.forward(_tau[t], {**params.get('dynamic'), 't': t}, order=1)
 
+            # equation function
+            _state_prev = x0 if t == 0 else self._dynamic.forward(_tau[t-1], {**params.get('dynamic'), 't': t-1})
+            h[t*self._nx: (t+1)*self._nx] = (_state_prev - _tau.get_state(t)).flatten()
 
+            if t < self._T:
+                # inequation of CBF Jacobian
+                Jg_cbf[t*self._nb: (t+1)*self._nb, t*self._ntau: (t+1)*self._ntau] = -(1-gamma)*self._barrier.forward(_tau.get_state(t), {**barrier_params, 't': t}, order=1) @ cx.T
+                Jg_cbf[t*self._nb: (t+1)*self._nb, (t+1)*self._ntau: (t+2)*self._ntau] = self._barrier.forward(_tau.get_state(t+1), {**barrier_params, 't': t+1}, order=1) @ (cx.T if t < self._T-1 else cxT.T)
+                # inequation of CBF function
+                g_cbf[t*self._nb: (t+1)*self._nb] = self._barrier.forward(_tau.get_state(t+1), {**barrier_params, 't': t+1}).flatten() - (1-gamma)*self._barrier.forward(_tau.get_state(t), {**barrier_params, 't': t}).flatten()
 
-        return Hl, Jl, G, g, Jh, -h
+                # inequation of boundary Jacobian
+                Jg_boundary[t*2*self._nu: (t+1)*2*self._nu, t*self._ntau: (t+1)*self._ntau] = torch.concat([cu.T, -cu.T], dim=0)
+                # inequation of boundary function
+                g_boundary[t*2*self._nu: (t+1)*2*self._nu] = torch.concat([self._umax-_tau.get_control(t).flatten(), _tau.get_control(t).flatten()-self._umin]) # (2*nu, )
+
+        # post process
+        # ensure positive matrix
+        Hl = 0.5 * (Hl + Hl.T)
+        eig_min = torch.linalg.eigvalsh(Hl).min()
+        eps = 1e-6
+        if eig_min < eps: Hl += (eps-eig_min) * torch.eye(self._var_dims)
+
+        # merge inequation Jacobian & function
+        Jg = torch.concat([Jg_cbf, Jg_boundary], dim=0)
+        
+        # return Hl, Jl, G, g, Jh, -h
 
     def _qp_var_post_process(self, vs: List[Tensor]) -> List[Tensor]:
         return [v.flatten() for v in vs]
