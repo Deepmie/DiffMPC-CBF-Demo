@@ -74,6 +74,7 @@ class DiffMPCBF:
             x0: Tensor,
             _tau: Tau,
             dveq: Tensor,
+            dvieq: Tensor,
             params: Optional[Dict[str, Dict[str, Any]]]
         ) -> Tuple[Tensor]:
         Jl: Tensor          = torch.zeros([self._var_dims])
@@ -130,7 +131,26 @@ class DiffMPCBF:
             Jg_boundary[(self._T+t)*self._nu: (self._T+t+1)*self._nu, t*self._ntau+self._nx: (t+1)*self._ntau] = -torch.eye(self._nu)
             g_boundary[t*self._nu: (t+1)*self._nu] = self._umax - _tau.get_control(t).flatten()
             g_boundary[(self._T+t)*self._nu: (self._T+t+1)*self._nu] = _tau.get_control(t).flatten() - self._umin
-        
+
+        # build aux variable
+        c: Tensor  = torch.concat([torch.eye(self._nx), torch.zeros([self._nu, self._nx])], axis=0) # (ntau, nx)
+        cT: Tensor = torch.eye(self._nx)
+        for t in range(self._T+1):
+            # cost Jacobian
+            Jl[t*self._ntau: (t+1)*self._ntau] = self._cost.get_stage_cost(_tau[t], {**params.get('cost'), 't': t}, order=1).flatten()
+            if t == self._T: Jl[self._T*self._ntau: self._var_dims] = self._cost.get_terminal_cost(_tau[t], {**params.get('cost'), 't': self._T}, order=1).flatten()
+
+            # cost Hessian
+            Hl[t*self._ntau: (t+1)*self._ntau, t*self._ntau: (t+1)*self._ntau] = \
+            self._cost.get_stage_cost(_tau[t], {**params.get('cost'), 't': t}, order=2) + \
+            (dveq[(t+1)*self._nx: (t+2)*self._nx].reshape(-1, 1, 1) * self._dynamic.forward(_tau[t], {**params.get('dynamic'), 't': t}, order=2)).sum(dim=0) + \
+            ...
+            if t == self._T: Hl[self._T*self._ntau: self._var_dims, self._T*self._ntau, self._var_dims] = self._cost.get_terminal_cost(_tau.get_state(self._T), {**params.get('cost'), 't': self._T}, order=2)
+
+            # equation Jacobian
+
+
+
         return Hl, Jl, G, g, Jh, -h
 
     def _qp_var_post_process(self, vs: List[Tensor]) -> List[Tensor]:
