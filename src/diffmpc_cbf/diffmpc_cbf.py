@@ -1,9 +1,9 @@
-from . import Cost, Dynamic, MetricFunction
+from . import Cost, Dynamic, Barrier, MetricFunction
 from .base import Tau
 from .utils import *
 import torch
 from torch import Tensor
-from typing import Dict, Tuple, Optional, cast
+from typing import Dict, Tuple, Optional, Any, cast
 from qpth.qp import QPFunction
 
 class DiffMPCBF:
@@ -16,6 +16,7 @@ class DiffMPCBF:
         batch_size: int,
         cost: Cost,
         dynamic: Dynamic,
+        barrier: Barrier,
         umin: Tensor, # (nu,)
         umax: Tensor,
         iter_nums: int=10,
@@ -23,7 +24,7 @@ class DiffMPCBF:
         line_search_decay_rate: float=0.5,
     ):
         self._nx = nx; self._nu = nu; self._nb = nb; self._T = T; self._batch_size = batch_size; self._ntau = self._nx + self._nu; self._var_dims = self._T*self._ntau+self._nx
-        self._cost = cost; self._dynamic = dynamic; self._umin = umin; self._umax = umax
+        self._cost = cost; self._dynamic = dynamic; self._barrier = barrier; self._umin = umin; self._umax = umax
         self._iter_nums = iter_nums; self._line_search_max_num = line_search_max_num; self._line_search_decay_rate = line_search_decay_rate
         self._metricfunc = MetricFunction(nx, nu, T, self._cost, self._dynamic)
         self._tau = Tau(self._nx, self._nu, self._T)
@@ -73,15 +74,16 @@ class DiffMPCBF:
             x0: Tensor,
             _tau: Tau,
             dveq: Tensor,
-            params: Optional[Dict[str, Tensor]]
+            params: Optional[Dict[str, Dict[str, Any]]]
         ) -> Tuple[Tensor]:
-        Jl: Tensor = torch.zeros([self._var_dims])
-        Hl: Tensor = torch.zeros([self._var_dims, self._var_dims])
-        Jh: Tensor = torch.zeros([(self._T+1)*self._nx, self._var_dims])
-        h: Tensor = torch.zeros([(self._T+1)*self._nx])
-        Jg1: Tensor =  torch.zeros([(self._T)*self._nb, ])
-        G: Tensor  = torch.zeros([2*self._nu*self._T, self._var_dims])
-        g: Tensor  = torch.zeros([2*self._nu*self._T])
+        Jl: Tensor          = torch.zeros([self._var_dims])
+        Hl: Tensor          = torch.zeros([self._var_dims, self._var_dims])
+        Jh: Tensor          = torch.zeros([(self._T+1)*self._nx, self._var_dims])
+        h: Tensor           = torch.zeros([(self._T+1)*self._nx])
+        Jg_cbf: Tensor      = torch.zeros([self._T*self._nb, self._var_dims])
+        g_cbf: Tensor       = torch.zeros([self._T*self._nb])
+        Jg_boundary: Tensor = torch.zeros([self._T*2*self._nu, self._var_dims])
+        g_boundary: Tensor  = torch.zeros([self._T*2*self._nu])
 
         # cost Jacobian
         Jl = self._cost.jacobian(_tau.tau, params.get('cost')).reshape(-1)[:self._var_dims] # (_var_dim, )
@@ -99,8 +101,8 @@ class DiffMPCBF:
         if eig_min < eps: Hl += (eps-eig_min) * torch.eye(self._var_dims)
         
         # equation Jacobian
-        c  = torch.concat([torch.eye(self._nx), torch.zeros([self._nu, self._nx])], axis=0) # (ntau, nx)
-        cT = torch.eye(self._nx)
+        c: Tensor  = torch.concat([torch.eye(self._nx), torch.zeros([self._nu, self._nx])], axis=0) # (ntau, nx)
+        cT: Tensor = torch.eye(self._nx)
         for t in range(self._T+1):
             Jh[t*self._nx: (t+1)*self._nx, t*self._ntau: (t+1)*self._ntau] = -c.T if t < self._T else -cT.T
             if t < self._T:
@@ -111,15 +113,23 @@ class DiffMPCBF:
             _state_prev = x0 if t == 0 else self._dynamic.forward(_tau[t-1], {**params.get('dynamic'), 't': t-1})
             h[t*self._nx: (t+1)*self._nx] = (_state_prev - _tau.get_state(t)).flatten()
 
-        # inequation Jacobian
+        # inequation of CBF Jacobian
+        barrier_params: Dict = params.get('barrier')
+        gamma: float = barrier_params.get('gamma')
+        for t in range(self._T):
+            Jg_cbf[t*self._nb: (t+1)*self._nb, t*self._ntau: (t+1)*self._ntau] = -(1-gamma) * self._barrier.forward(_tau.get_state(t), {**barrier_params, 't': t}, order=1) @ c.T
+            Jg_cbf[t*self._nb: (t+1)*self._nb, (t+1)*self._ntau: (t+2)*self._ntau] = self._barrier.forward(_tau.get_state(t+1), {**barrier_params, 't': t+1}, order=1) @ (c.T if t < self._T-1 else cT.T)
 
-
+        # inequation of CBF function
+        for t in range(self._T):
+            g_cbf[t*self._nb: (t+1)*self._nb] = self._barrier.forward(_tau.get_state(t), {**barrier_params, 't': t}).flatten()
+        
         # set control boundary conditions
         for t in range(self._T):
-            G[t*self._nu: (t+1)*self._nu, t*self._ntau+self._nx: (t+1)*self._ntau] = torch.eye(self._nu)
-            G[(self._T+t)*self._nu: (self._T+t+1)*self._nu, t*self._ntau+self._nx: (t+1)*self._ntau] = -torch.eye(self._nu)
-            g[t*self._nu: (t+1)*self._nu] = self._umax - _tau.get_control(t).flatten()
-            g[(self._T+t)*self._nu: (self._T+t+1)*self._nu] = _tau.get_control(t).flatten() - self._umin
+            Jg_boundary[t*self._nu: (t+1)*self._nu, t*self._ntau+self._nx: (t+1)*self._ntau] = torch.eye(self._nu)
+            Jg_boundary[(self._T+t)*self._nu: (self._T+t+1)*self._nu, t*self._ntau+self._nx: (t+1)*self._ntau] = -torch.eye(self._nu)
+            g_boundary[t*self._nu: (t+1)*self._nu] = self._umax - _tau.get_control(t).flatten()
+            g_boundary[(self._T+t)*self._nu: (self._T+t+1)*self._nu] = _tau.get_control(t).flatten() - self._umin
         
         return Hl, Jl, G, g, Jh, -h
 
