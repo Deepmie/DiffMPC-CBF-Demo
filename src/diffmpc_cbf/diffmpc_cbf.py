@@ -98,19 +98,22 @@ class DiffMPCBF:
         gamma: float = barrier_params.get('gamma')
         for t in range(self._T+1):
             # cost Jacobian
-            Jl[t*self._ntau: (t+1)*self._ntau] = self._cost.get_stage_cost(_tau[t], {**params.get('cost'), 't': t}, order=1).flatten()
-            if t == self._T: Jl[self._T*self._ntau: self._var_dims] = self._cost.get_terminal_cost(_tau[t], {**params.get('cost'), 't': self._T}, order=1).flatten()
+            if t < self._T: Jl[t*self._ntau: (t+1)*self._ntau] = self._cost.get_stage_cost(_tau[t], {**params.get('cost'), 't': t}, order=1).flatten()
+            if t == self._T: Jl[self._T*self._ntau: self._var_dims] = self._cost.get_terminal_cost(_tau.get_state(t), {**params.get('cost'), 't': self._T}, order=1).flatten()
 
             # cost Hessian
-            Hl[t*self._ntau: (t+1)*self._ntau, t*self._ntau: (t+1)*self._ntau] = \
-            self._cost.get_stage_cost(_tau[t], {**params.get('cost'), 't': t}, order=2) + \
-            (dveq[(t+1)*self._nx: (t+2)*self._nx].reshape(-1, 1, 1) * self._dynamic.forward(_tau[t], {**params.get('dynamic'), 't': t}, order=2)).sum() + \
-            (dvneq[t*self._nb: (t+1)*self._nb].reshape(-1, 1, 1) * -(1-gamma)* cx.unsqueeze(0) @ self._barrier.forward(_tau.get_state(t), {**params.get('barrier'), 't': t}, order=2) @ cx.T.unsqueeze(0)).sum()
-            if t == self._T: Hl[self._T*self._ntau: self._var_dims, self._T*self._ntau, self._var_dims] = self._cost.get_terminal_cost(_tau.get_state(self._T), {**params.get('cost'), 't': self._T}, order=2)
+            if t < self._T:
+                Hl[t*self._ntau: (t+1)*self._ntau, t*self._ntau: (t+1)*self._ntau] = \
+                self._cost.get_stage_cost(_tau[t], {**params.get('cost'), 't': t}, order=2) + \
+                (dveq[(t+1)*self._nx: (t+2)*self._nx].reshape(-1, 1, 1) * self._dynamic.forward(_tau[t], {**params.get('dynamic'), 't': t}, order=2)).sum(dim=0) + \
+                ((1-gamma) * dvneq[t*self._nb: (t+1)*self._nb].reshape(-1, 1, 1) * cx.unsqueeze(0) @ self._barrier.forward(_tau.get_state(t), {**params.get('barrier'), 't': t}, order=2) @ cx.T.unsqueeze(0)).sum(dim=0)
+                if t > 0: Hl[t*self._ntau: (t+1)*self._ntau, t*self._ntau: (t+1)*self._ntau] += (-dvneq[(t-1)*self._nb: t*self._nb].reshape(-1, 1, 1) * cx.unsqueeze(0) @ self._barrier.forward(_tau.get_state(t), {**params.get('barrier'), 't': t}, order=2) @ cx.T.unsqueeze(0)).sum(dim=0)
+
+            if t == self._T: Hl[self._T*self._ntau: self._var_dims, self._T*self._ntau: self._var_dims] = self._cost.get_terminal_cost(_tau.get_state(self._T), {**params.get('cost'), 't': self._T}, order=2)
 
             # equation Jacobian
             Jh[t*self._nx: (t+1)*self._nx, t*self._ntau: (t+1)*self._ntau] = -cx.T if t < self._T else -cxT.T
-            if t < self._T: Jh[(t+1)*self._nx: (t+1)*self._nx, t*self._ntau: (t+1)*self._ntau] = self._dynamic.forward(_tau[t], {**params.get('dynamic'), 't': t}, order=1)
+            if t < self._T: Jh[(t+1)*self._nx: (t+2)*self._nx, t*self._ntau: (t+1)*self._ntau] = self._dynamic.forward(_tau[t], {**params.get('dynamic'), 't': t}, order=1)
 
             # equation function
             _state_prev = x0 if t == 0 else self._dynamic.forward(_tau[t-1], {**params.get('dynamic'), 't': t-1})
@@ -118,21 +121,21 @@ class DiffMPCBF:
 
             if t < self._T:
                 # inequation of CBF Jacobian
-                Jg_cbf[t*self._nb: (t+1)*self._nb, t*self._ntau: (t+1)*self._ntau] = -(1-gamma)*self._barrier.forward(_tau.get_state(t), {**barrier_params, 't': t}, order=1) @ cx.T
-                Jg_cbf[t*self._nb: (t+1)*self._nb, (t+1)*self._ntau: (t+2)*self._ntau] = self._barrier.forward(_tau.get_state(t+1), {**barrier_params, 't': t+1}, order=1) @ (cx.T if t < self._T-1 else cxT.T)
+                Jg_cbf[t*self._nb: (t+1)*self._nb, t*self._ntau: (t+1)*self._ntau] = (1-gamma)*self._barrier.forward(_tau.get_state(t), {**barrier_params, 't': t}, order=1) @ cx.T
+                Jg_cbf[t*self._nb: (t+1)*self._nb, (t+1)*self._ntau: (t+2)*self._ntau] = -self._barrier.forward(_tau.get_state(t+1), {**barrier_params, 't': t+1}, order=1) @ (cx.T if t < self._T-1 else cxT.T)
                 # inequation of CBF function
-                g_cbf[t*self._nb: (t+1)*self._nb] = self._barrier.forward(_tau.get_state(t+1), {**barrier_params, 't': t+1}).flatten() - (1-gamma)*self._barrier.forward(_tau.get_state(t), {**barrier_params, 't': t}).flatten()
+                g_cbf[t*self._nb: (t+1)*self._nb] = -self._barrier.forward(_tau.get_state(t+1), {**barrier_params, 't': t+1}).flatten() + (1-gamma)*self._barrier.forward(_tau.get_state(t), {**barrier_params, 't': t}).flatten()
 
                 # inequation of boundary Jacobian
                 Jg_boundary[t*2*self._nu: (t+1)*2*self._nu, t*self._ntau: (t+1)*self._ntau] = torch.concat([-cu.T, cu.T], dim=0)
                 # inequation of boundary function
-                g_boundary[t*2*self._nu: (t+1)*2*self._nu] = torch.concat([self._umax-_tau.get_control(t).flatten(), _tau.get_control(t).flatten()-self._umin]) # (2*nu, )
+                g_boundary[t*2*self._nu: (t+1)*2*self._nu] = torch.concat([self._umin-_tau.get_control(t).flatten(), _tau.get_control(t).flatten()-self._umax]) # (2*nu, )
 
         # post process
         # ensure positive matrix
         Hl = 0.5 * (Hl + Hl.T)
         eig_min = torch.linalg.eigvalsh(Hl).min()
-        eps = 1e-6
+        eps = 1e-4
         if eig_min < eps: Hl += (eps-eig_min) * torch.eye(self._var_dims)
 
         # merge inequation Jacobian & function

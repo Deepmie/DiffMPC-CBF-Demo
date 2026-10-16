@@ -8,7 +8,7 @@
             "name": "MainDebugger",
             "type": "debugpy",
             "request": "launch",
-            "program": "./examples/spnn_ex/test_sqp_ilqr.py",
+            "program": "./examples/spnn_ex/test_sqp_withcbf.py",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}"
         },

@@ -38,7 +38,8 @@ class SpnnDynamic(Dynamic):
         _res = _res.square().sum()
         return torch.stack([
             pt+self._delta_t*vt,
-            vt+self._delta_t*(ut-0.1*vt**3+self._eps*_res)
+            # vt+self._delta_t*(ut-0.1*vt**3+self._eps*_res)
+            vt+self._delta_t*(ut-0.1*vt**3),
         ])
 
 class SpnnBarrier(Barrier):
@@ -48,4 +49,4 @@ class SpnnBarrier(Barrier):
     def _define_barrier_function(self, xt: Tensor, params: Dict[str, List[Tensor]]) -> Tensor:
         pt, vt = xt
         obs: List[Tensor] = params.get('obs')
-        return torch.stack([(pt-o[0])**2 + (pt-o[1])**2 - o[2]**2 for o in obs])
+        return torch.stack([(pt-o[0])**2 + (vt-o[1])**2 - (o[2]+o[3])**2 for o in obs])

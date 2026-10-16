@@ -22,10 +22,12 @@ class Env:
             pt+self._delta_t*vt,
             vt+self._delta_t*(ut-0.1*vt**3),
         ])
+        self._xs.append(self._x.copy())
         return self._x
 
     def reset(self):
-        self._x: ndarray = x0.copy() # (nx, )
+        self._x: ndarray = self._x0.copy() # (nx, )
+        self._xs: List[ndarray] = [self._x0.copy(), ]
 
     def show(self):
         fig, ax = plt.subplots(figsize=(10, 6))
@@ -35,12 +37,14 @@ class Env:
         ax.text(self._x0[0], self._x0[1], 'start')
         ax.text(self._xref[0], self._xref[1], 'target')
 
-        for i in range(len(obs)):
-            o = obs[i]
+        for o in self._obs:
             circ1 = Circle((o[0], o[1]), radius=o[2]+o[3], facecolor='skyblue', alpha=0.4, linestyle='--', edgecolor='b')
             circ2 = Circle((o[0], o[1]), radius=o[2], facecolor='green', alpha=0.3)
             ax.add_patch(circ1)
             ax.add_patch(circ2)
+
+        _xs = np.stack(self._xs) # (N, nx)
+        ax.scatter(_xs[:, 0], _xs[:, 1], marker='h', c='k')
 
         ax.set_xlim(-0.1, 1.1)
         ax.set_xlim(-0.1, 1.1)

@@ -5,6 +5,7 @@ from torch import Tensor
 import numpy as np
 from numpy import ndarray
 from system import SpnnCost, SpnnDynamic, SpnnBarrier
+from env import Env
 from typing import List
 
 def main():
@@ -15,7 +16,7 @@ def main():
     nb: int = 1
     T: int  = 5
     delta_t: float = 0.1
-    N: int  = 50
+    N: int  = 80
     ntau = nx + nu
     nl = T * nu
     # build mpc-cbf solver
@@ -43,19 +44,17 @@ def main():
         umax = umax,
     )
     
+    env = Env(x0.flatten().detach().numpy(), xref.flatten().detach().numpy(), obs, delta_t=delta_t)
     # start
-    x0 = torch.tensor([[0.], [0.]])
-    xs = torch.zeros([N, nx]); xs[0] = x0.flatten()
-
     cp = list(cost.context_network.named_parameters())
     fp = list(dynamic.residual_network.parameters())
-
+    x = x0.clone()
     for t in range(1, N):
         params = {
             'cost': {'xref': xref},
             'barrier': {'obs': obs, 'gamma': gamma, },
         }
-        tau = mpc.step(xs[t-1], params)
+        tau = mpc.step(x, params)
         # u = tau.u.view(-1)
         # dl_dcp = [torch.zeros([nl, *list(p.shape)]) for p in cp]
         # dl_dfp = [torch.zeros([nl, *list(p.shape)]) for p in fp]
@@ -64,9 +63,11 @@ def main():
         #     grad_fp = torch.autograd.grad(u[i], fp, retain_graph=True)
         #     for j in range(len(dl_dcp)): dl_dcp[j][i] = grad_cp[j]
         #     for j in range(len(dl_dfp)): dl_dfp[j][i] = grad_fp[j]
-        xs[t]  = dynamic.forward((xs[t-1], tau.u[0]), {'t': 0}).flatten()
+        x = env.step(tau.u[0].flatten().detach().numpy())
+        x = torch.tensor(x)
 
-    # plot_trajectory(xs.detach().numpy())
+    env.show()
+    
 
 if __name__ == '__main__':
     main()
