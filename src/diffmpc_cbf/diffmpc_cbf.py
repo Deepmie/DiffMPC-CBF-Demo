@@ -47,8 +47,8 @@ class DiffMPCBF:
             
             for i in range(self._iter_nums):
                 alpha: float = 1.0
-                Q, p, G, h, A, b = self._build_sqp_params(x0, self._tau, dveq, dvneq, params)
-                tau_delta, dveq_qp, dvneq_qp = QPFunction(eps=1e-12, verbose=0, maxIter=20)(Q, p, G, h, A, b)
+                Hl, Jl, Jg, g, Jh, h = self._build_sqp_params(x0, self._tau, dveq, dvneq, params)
+                tau_delta, dveq_qp, dvneq_qp = QPFunction(eps=1e-12, verbose=0, maxIter=20)(Hl, Jl, Jg, -g, Jh, -h)
                 tau_delta, dveq_qp, dvneq_qp = self._qp_var_post_process([tau_delta, dveq_qp, dvneq_qp])
                 tau_delta = Tau.build_from_tensor(tau_delta, self._nx, self._ntau)
                 dveq_delta = dveq_qp - dveq
@@ -68,8 +68,8 @@ class DiffMPCBF:
         dveq_star = dveq.detach()
         dvneq_star = dvneq.detach()
         # solve the last qp
-        Q, p, G, h, A, b = self._build_sqp_params(x0, tau_star, dveq_star, dvneq_star, params)
-        tau_delta, _, _ = QPFunction(eps=1e-12, verbose=0, maxIter=20)(Q, p, G, h, A, b); tau_delta = cast(Tensor, tau_delta)
+        Hl, Jl, Jg, g, Jh, h = self._build_sqp_params(x0, tau_star, dveq_star, dvneq_star, params)
+        tau_delta, _, _ = QPFunction(eps=1e-12, verbose=0, maxIter=20)(Hl, Jl, Jg, -g, Jh, -h); tau_delta = cast(Tensor, tau_delta)
         tau_delta = Tau.build_from_tensor(tau_delta.flatten(), self._nx, self._ntau)
         return tau_star + tau_delta
 
@@ -141,7 +141,7 @@ class DiffMPCBF:
         # merge inequation Jacobian & function
         Jg = torch.concat([Jg_cbf, Jg_boundary], dim=0)
         g = torch.concat([g_cbf, g_boundary], dim=0)
-        return Hl, Jl, Jg, -g, Jh, -h
+        return Hl, Jl, Jg, g, Jh, h
 
     def _qp_var_post_process(self, vs: List[Tensor]) -> List[Tensor]:
         return [v.flatten() for v in vs]
