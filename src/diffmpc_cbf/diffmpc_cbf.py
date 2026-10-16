@@ -19,6 +19,7 @@ class DiffMPCBF:
         barrier: Barrier,
         umin: Tensor, # (nu,)
         umax: Tensor,
+        metric_weight: Dict={'equation': 10.0, 'inequation_cbf': 5.0, 'inequation_boundary': 5.0},
         iter_nums: int=10,
         line_search_max_num: int=5,
         line_search_decay_rate: float=0.5,
@@ -26,7 +27,7 @@ class DiffMPCBF:
         self._nx = nx; self._nu = nu; self._nb = nb; self._T = T; self._batch_size = batch_size; self._ntau = self._nx + self._nu; self._var_dims = self._T*self._ntau+self._nx
         self._cost = cost; self._dynamic = dynamic; self._barrier = barrier; self._umin = umin; self._umax = umax
         self._iter_nums = iter_nums; self._line_search_max_num = line_search_max_num; self._line_search_decay_rate = line_search_decay_rate
-        self._metricfunc = MetricFunction(nx, nu, T, self._cost, self._dynamic)
+        self._metricfunc = MetricFunction(nx, nu, nb, T, self._cost, self._dynamic, metric_weight)
         self._tau = Tau(self._nx, self._nu, self._T)
 
     def step(self, x0: Tensor, params: Optional[Dict[str, Tensor]]=None) -> Tau:
@@ -55,8 +56,8 @@ class DiffMPCBF:
                 dvneq_delta = dvneq_qp - dvneq
 
                 for j in range(self._line_search_max_num):
-                    if self._metricfunc(self._tau + alpha*tau_delta, x0, params, dveq_qp) < \
-                    self._metricfunc(self._tau, x0, params, dveq_qp):
+                    if self._metricfunc(self._tau + alpha*tau_delta, x0, self._cost, self._dynamic, self._barrier, self._umin, self._umax, params, dveq_qp, dvneq_qp) < \
+                       self._metricfunc(self._tau, x0, self._cost, self._dynamic, self._barrier, self._umin, self._umax, params, dveq_qp, dvneq_qp):
                         break
                     alpha = self._line_search_decay_rate * alpha
                 # update varible
@@ -108,8 +109,10 @@ class DiffMPCBF:
                 (dveq[(t+1)*self._nx: (t+2)*self._nx].reshape(-1, 1, 1) * self._dynamic.forward(_tau[t], {**params.get('dynamic'), 't': t}, order=2)).sum(dim=0) + \
                 ((1-gamma) * dvneq[t*self._nb: (t+1)*self._nb].reshape(-1, 1, 1) * cx.unsqueeze(0) @ self._barrier.forward(_tau.get_state(t), {**params.get('barrier'), 't': t}, order=2) @ cx.T.unsqueeze(0)).sum(dim=0)
                 if t > 0: Hl[t*self._ntau: (t+1)*self._ntau, t*self._ntau: (t+1)*self._ntau] += (-dvneq[(t-1)*self._nb: t*self._nb].reshape(-1, 1, 1) * cx.unsqueeze(0) @ self._barrier.forward(_tau.get_state(t), {**params.get('barrier'), 't': t}, order=2) @ cx.T.unsqueeze(0)).sum(dim=0)
-
-            if t == self._T: Hl[self._T*self._ntau: self._var_dims, self._T*self._ntau: self._var_dims] = self._cost.get_terminal_cost(_tau.get_state(self._T), {**params.get('cost'), 't': self._T}, order=2)
+            
+            if t == self._T:
+                Hl[self._T*self._ntau: self._var_dims, self._T*self._ntau: self._var_dims] = self._cost.get_terminal_cost(_tau.get_state(self._T), {**params.get('cost'), 't': self._T}, order=2)
+                Hl[t*self._ntau: (t+1)*self._ntau, t*self._ntau: (t+1)*self._ntau] += (-dvneq[(t-1)*self._nb: t*self._nb].reshape(-1, 1, 1) * cxT.unsqueeze(0) @ self._barrier.forward(_tau.get_state(self._T), {**params.get('barrier'), 't': self._T}, order=2) @ cxT.T.unsqueeze(0)).sum(dim=0)
 
             # equation Jacobian
             Jh[t*self._nx: (t+1)*self._nx, t*self._ntau: (t+1)*self._ntau] = -cx.T if t < self._T else -cxT.T

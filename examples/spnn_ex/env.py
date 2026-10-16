@@ -47,7 +47,7 @@ class Env:
         ax.scatter(_xs[:, 0], _xs[:, 1], marker='h', c='k')
 
         ax.set_xlim(-0.1, 1.1)
-        ax.set_xlim(-0.1, 1.1)
+        ax.set_ylim(-0.1, 1.1)
         ax.set_aspect('equal')
         plt.show()
         
