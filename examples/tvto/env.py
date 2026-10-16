@@ -14,12 +14,16 @@ class CircObs:
         self._p = p; self._A = A; self._B = B; self._omega = omega; self._phi = phi
 
     def step(self, t: int) -> ndarray:
-        return np.array([
-            self._A[0]+self._B[0]*np.cos(self._omega[0]*t+self._phi[0]),
-            self._A[1]+self._B[1]*np.sin(self._omega[1]*t+self._phi[1]),
+        Ax, Ay, Ax_delta, Ay_delta = self._A
+        Bx, By, Bx_delta, By_delta = self._B
+        omegax, omegay, omegax_delta1, omegax_delta2, omegay_delta1, omegay_delta2 = self._omega
+        phix, phiy, phix_delta1, phix_delta2, phiy_delta1, phiy_delta2 = self._phi
+        self._p = np.array([
+            Ax+Bx*np.cos(omegax*t+phix),
+            Ay+By*np.sin(omegay*t+phiy),
         ]) + np.array([
-            self._A[0]*np.sin(omega1[0]*t+phi[0]) + A2[0]*np.sin(omega2[0]*t+phi[1]),
-            self._A[0]*np.sin(omega1[1]*t+phi[2]) + A2[1]*np.sin(omega2[1]*t+phi[3]),
+            Ax_delta*np.sin(omegax_delta1*t+phix_delta1) + Bx_delta*np.sin(omegax_delta2*t+phix_delta2),
+            Ay_delta*np.sin(omegay_delta1*t+phiy_delta1) + By_delta*np.sin(omegay_delta2*t+phiy_delta2),
         ])
 
     @property
