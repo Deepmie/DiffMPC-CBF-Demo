@@ -7,8 +7,8 @@ import torch
 from torch import Tensor
 
 class MetricFunction:
-    def __init__(self, nx: int, nu: int, nb: int, T: int, cost: Cost, dynamic: Dynamic, weight: Dict[str, float]):
-        self._nx = nx; self._nu = nu; self._nb = nb; self._T = T; self._cost = cost; self._dynamic = dynamic
+    def __init__(self, nx: int, nu: int, nb: int, T: int, cost: Cost, dynamic: Dynamic, barrier: Barrier, umin: Tensor, umax: Tensor, weight: Dict[str, float]):
+        self._nx = nx; self._nu = nu; self._nb = nb; self._T = T; self._cost = cost; self._dynamic = dynamic; self._barrier = barrier; self._umin = umin; self._umax = umax
         self._ntau = self._nx + self._nu
         self._weight = weight
         if not (('equation' in self._weight) and ('inequation_cbf' in self._weight) and ('inequation_boundary' in self._weight)): raise ValueError('Missing Keywords')
@@ -17,11 +17,6 @@ class MetricFunction:
             self,
             tau: Tau,
             x0: Tensor,
-            cost: Cost,
-            dynamic: Dynamic,
-            barrier: Barrier,
-            umin: Tensor, # (nu, )
-            umax: Tensor, # (nu, )
             params: Optional[Dict[str, Any]]=None,
             dveq: Optional[Tensor]=None,
             dvneq: Optional[Tensor]=None,
@@ -34,17 +29,17 @@ class MetricFunction:
         gamma: float         = barrier_params.get('gamma')
         for t in range(self._T+1):
             # cost
-            if t <  self._T: metric += cost.get_stage_cost(tau[t], {**params.get('cost'), 't': t})
-            if t == self._T: metric += cost.get_terminal_cost(tau.get_state(self._T), {**params.get('cost'), 't': self._T})
+            if t <  self._T: metric += self._cost.get_stage_cost(tau[t], {**params.get('cost'), 't': t})
+            if t == self._T: metric += self._cost.get_terminal_cost(tau.get_state(self._T), {**params.get('cost'), 't': self._T})
 
             # equation
-            _state_prev = x0 if t == 0 else dynamic.forward(tau[t-1], {**params.get('dynamic'), 't': t-1})
+            _state_prev = x0 if t == 0 else self._dynamic.forward(tau[t-1], {**params.get('dynamic'), 't': t-1})
             h[t*self._nx: (t+1)*self._nx] = (_state_prev - tau.get_state(t)).flatten()
 
             if t < self._T:
                 # inequation
-                g_cbf[t*self._nb: (t+1)*self._nb] = -barrier.forward(tau.get_state(t+1), {**barrier_params, 't': t+1}).flatten() + (1-gamma)*barrier.forward(tau.get_state(t), {**barrier_params, 't': t}).flatten()
-                g_boundary[t*2*self._nu: (t+1)*2*self._nu] = torch.concat([umin-tau.get_control(t).flatten(), tau.get_control(t).flatten()-umax]) # (2*nu, )
+                g_cbf[t*self._nb: (t+1)*self._nb] = -self._barrier.forward(tau.get_state(t+1), {**barrier_params, 't': t+1}).flatten() + (1-gamma)*self._barrier.forward(tau.get_state(t), {**barrier_params, 't': t}).flatten()
+                g_boundary[t*2*self._nu: (t+1)*2*self._nu] = torch.concat([self._umin-tau.get_control(t).flatten(), tau.get_control(t).flatten()-self._umax]) # (2*nu, )
 
         # equation & inequation residual
         res = torch.tensor([
