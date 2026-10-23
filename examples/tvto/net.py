@@ -33,13 +33,13 @@ class ResidualNetwork(nn.Module):
 
 
 class DeltaNetwork(nn.Module):
-    def __init__(self, no: int):
+    def __init__(self, ipt_dim: int):
         super().__init__()
         self._net = nn.Sequential(
-            nn.Linear(3, 8),
+            nn.Linear(ipt_dim, 8),
             nn.Tanh(),
-            nn.Linear(8, no),
+            nn.Linear(8, 1),
         )
 
     def forward(self, x: Tensor) -> Tensor: # (3, )
-        return self._net(x) # (no, )
+        return 0.02*torch.sigmoid(self._net(x))

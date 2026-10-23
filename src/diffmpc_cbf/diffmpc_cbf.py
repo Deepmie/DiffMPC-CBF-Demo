@@ -3,10 +3,11 @@ from .base import Tau
 from .utils import *
 import torch
 from torch import Tensor
+import torch.nn as nn
 from typing import Dict, Tuple, Optional, Any, cast
 from qpth.qp import QPFunction
 
-class DiffMPCBF:
+class DiffMPCBF(nn.Module):
     def __init__(
         self,
         nx: int,
@@ -17,20 +18,21 @@ class DiffMPCBF:
         cost: Cost,
         dynamic: Dynamic,
         barrier: Barrier,
-        umin: Tensor, # (nu,)
+        umin: Tensor, # (nu, )
         umax: Tensor,
         metric_weight: Dict={'equation': 10.0, 'inequation_cbf': 5.0, 'inequation_boundary': 5.0},
         iter_nums: int=10,
         line_search_max_num: int=5,
         line_search_decay_rate: float=0.5,
     ):
+        super().__init__()
         self._nx = nx; self._nu = nu; self._nb = nb; self._T = T; self._batch_size = batch_size; self._ntau = self._nx + self._nu; self._var_dims = self._T*self._ntau+self._nx
         self._cost = cost; self._dynamic = dynamic; self._barrier = barrier; self._umin = umin; self._umax = umax
         self._iter_nums = iter_nums; self._line_search_max_num = line_search_max_num; self._line_search_decay_rate = line_search_decay_rate
         self._metricfunc = MetricFunction(nx, nu, nb, T, self._cost, self._dynamic, self._barrier, self._umin, self._umax, metric_weight)
         self._tau = Tau(self._nx, self._nu, self._T)
 
-    def step(self, x0: Tensor, params: Optional[Dict[str, Tensor]]=None) -> Tau:
+    def forward(self, x0: Tensor, params: Optional[Dict[str, Tensor]]=None) -> Tau:
         if params is None: params = {}
         for key in ['cost', 'dynamic']:
             if key not in params:
@@ -89,7 +91,7 @@ class DiffMPCBF:
         g_cbf: Tensor       = torch.zeros([self._T*self._nb])
         Jg_boundary: Tensor = torch.zeros([self._T*2*self._nu, self._var_dims])
         g_boundary: Tensor  = torch.zeros([self._T*2*self._nu])
-
+        
         # build aux variable
         cx: Tensor  = torch.concat([torch.eye(self._nx), torch.zeros([self._nu, self._nx])], dim=0) # (ntau, nx)
         cxT: Tensor = torch.eye(self._nx)

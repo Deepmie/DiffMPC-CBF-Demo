@@ -5,8 +5,9 @@ from torch import Tensor
 import torch.nn as nn
 from ..base.derivatives import DerivativesFunctionWrapper
 
-class Barrier(ABC):
+class Barrier(ABC, nn.Module):
     def __init__(self, nx: int, nu: int, T: int):
+        super().__init__()
         self._nx = nx; self._nu = nu; self._T = T; self._ntau = self._nx + self._nu
         self._barrier_function = DerivativesFunctionWrapper(self._define_barrier_function)
 

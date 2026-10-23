@@ -5,6 +5,29 @@ from matplotlib.patches import Circle
 from matplotlib.animation import FuncAnimation, PillowWriter
 from typing import List, Dict, Tuple, Optional
 
+class Clock:
+    def __init__(self, delta_t: float):
+        self._delta_t = delta_t
+        self.reset()
+
+    def step(self):
+        self._num += 1
+
+    def reset(self):
+        self._num = 0
+
+    @property
+    def t(self) -> float:
+        return self._num * self._delta_t
+
+    @property
+    def num(self) -> int:
+        return self._num
+
+    @property
+    def delta_t(self) -> float:
+        return self._delta_t
+
 class CircObs:
     def __init__(
             self,
@@ -15,14 +38,14 @@ class CircObs:
             B: ndarray, # (4, )
             omega: ndarray, # (6, )
             phi: ndarray, # (2, )
-            delta_t: float,
+            clock: Clock,
         ):
         self._r = r; self._dr = dr
         self._A = A; self._B = B; self._omega = omega
-        self._phi = phi; self._delta_t = delta_t
+        self._phi = phi; self._clock = clock
 
     def step(self) -> ndarray:
-        _t = self._num * self._delta_t
+        _t = self._clock.t
         Ax, Ay, Ax_delta, Ay_delta = self._A
         Bx, By, Bx_delta, By_delta = self._B
         omegax, omegay, omegax_delta1, omegax_delta2, omegay_delta1, omegay_delta2 = self._omega
@@ -35,20 +58,19 @@ class CircObs:
             Ax_delta*np.sin(omegax_delta1*_t+phix_delta1) + Bx_delta*np.sin(omegax_delta2*_t+phix_delta2),
             Ay_delta*np.sin(omegay_delta1*_t+phiy_delta1) + By_delta*np.sin(omegay_delta2*_t+phiy_delta2),
         ])
-        self._num += 1
         return self._p
 
-    def predict(self, T: int) -> List[ndarray]:
-        _num = self._num
+    def predict(self, T: int) -> List[Dict]:
+        _num = self._clock.num
         Ax, Ay, Ax_delta, Ay_delta = self._A
         Bx, By, Bx_delta, By_delta = self._B
         omegax, omegay, omegax_delta1, omegax_delta2, omegay_delta1, omegay_delta2 = self._omega
         phix, phiy = self._phi
         phix_delta1, phix_delta2, phiy_delta1, phiy_delta2 = self._phi_delta
-        _ps: List[ndarray] = []
+        _ps: List[Dict] = []
         # iteration
         for i in range(T):
-            _t = _num * self._delta_t
+            _t = _num * self._clock.delta_t
             _p = np.array([
                 Ax+Bx*np.cos(omegax*_t+phix),
                 Ay+By*np.sin(omegay*_t+phiy),
@@ -62,7 +84,6 @@ class CircObs:
 
     def reset(self):
         self._phi_delta = np.random.uniform(0, 2*np.pi, [4])
-        self._num: int = 0
         self.step()
 
     @property
@@ -79,15 +100,17 @@ class CircObs:
 
 
 class Agent:
-    def __init__(self, r: float, delta_t: float, p0: Optional[ndarray]=None):
-        self._r = r; self._delta_t = delta_t
+    def __init__(self, r: float, b: float, clock: Clock, p0: Optional[ndarray]=None):
+        self._r = r; self._b = b; self._clock = clock; self._delta_t = self._clock.delta_t
         self._p0 = p0
 
     def step(self, u: ndarray) -> ndarray: # (nu, 1)
         p, v = self._z[0:2], self._z[2:4]
+        d_true = -self._b * v
+        aeff = u + d_true
         self._z = np.concat([
-            p + self._delta_t*v + 1/2*self._delta_t**2*u,
-            v + self._delta_t*u,
+            p + self._delta_t*v + 1/2*self._delta_t**2*aeff,
+            v + self._delta_t*aeff,
         ], axis=0)
         return self._z
 
@@ -115,6 +138,7 @@ class Env:
             pref: ndarray, # agents' target point
             delta_t: float=0.01, # env run delta t
         ):
+        self._clock = Clock(delta_t)
         self._p0 = p0; self._pref = pref
         self._obs = [
             CircObs(
@@ -124,7 +148,7 @@ class Env:
                 B  = [0.24, 0.025, 0.008, 0.006],
                 omega = [2*np.pi/6, 2*np.pi/7, 2*np.pi/5, 2*np.pi/3.7, 2*np.pi/4.8, 2*np.pi/3.9],
                 phi = [0.0, 0.0],
-                delta_t = delta_t,
+                clock=self._clock,
             ),
             CircObs(
                 r  = 0.06,
@@ -133,17 +157,16 @@ class Env:
                 B = [0.025, 0.24, 0.006, 0.008],
                 omega = [2*np.pi/7, 2*np.pi/6.8, 2*np.pi/4.6, 2*np.pi/3.8, 2*np.pi/5.2, 2*np.pi/4.0],
                 phi = [0.0, np.pi/3],
-                delta_t = delta_t,
+                clock=self._clock,
             ),
         ]
         self._delta_t = delta_t
-        self._agent = Agent(r = 0.02, delta_t = delta_t, p0 = p0)
+        self._agent = Agent(r = 0.02, b = 0.5, clock = self._clock, p0 = p0)
         self.reset()
     
     def step(self, u: ndarray) -> Tuple[ndarray, bool]:
         _done: bool = False
-        self._num += 1
-        self._t = self._num * self._delta_t
+        self._clock.step()
 
         # obstacale move
         _obs_state = []
@@ -161,10 +184,10 @@ class Env:
         return _agent_state, _done
 
     def reset(self):
+        self._clock.reset()
         self._agent.reset()
         for o in self._obs: o.reset()
         # record history sequence
-        self._num = 0 # set abs clock
         self._obs_states: List[List[ndarray]] = []
         self._obs_states.append([o.state for o in self._obs])
         self._agent_states: List[ndarray] = []
@@ -193,7 +216,7 @@ class Env:
         ax.set_ylim(-0.1, 1.1)
         ax.set_aspect('equal')
 
-        ani = FuncAnimation(fig, self.update, frames=self._num, interval=50, blit=True)
+        ani = FuncAnimation(fig, self.update, frames=self._clock.num, interval=50, blit=True)
         ani.save('imgs/tvto.gif', writer=PillowWriter(fps=20))
 
     def update(self, frame: int) -> List[Tuple[Circle]]:
@@ -208,16 +231,7 @@ class Env:
         return _circs
 
     def get_obs_info(self, T: int) -> List[List[Dict]]:
-        obs_info_predicted  = [o.predict(T) for o in self._obs]
-        obs_info = []
-        for op in obs_info_predicted:
-            r = []
-            for opt in op:
-                _opt = opt.copy()
-                _opt['radius'] = opt['radius'] + self._agent.radius
-                r.append(_opt)
-            obs_info.append(r)
-        return obs_info
+        return [o.predict(T) for o in self._obs]
 
     def _detect_collision(self) -> bool:
         for o in self._obs:
@@ -235,6 +249,10 @@ class Env:
     @property
     def state(self) -> ndarray: # (4, 1)
         return self._agent.state
+
+    @property
+    def radius_agent(self) -> float:
+        return self._agent.radius
 
 
 if __name__ == '__main__':

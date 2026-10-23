@@ -23,6 +23,7 @@ class DerivativesFunctionWrapper:
         Input:
             ipt[nx, 1]
         '''
+        _device = ipt.device
         with torch.enable_grad():
             ipt = ipt.detach().requires_grad_()
             value = self.__call__(ipt, params)
@@ -35,16 +36,16 @@ class DerivativesFunctionWrapper:
             if value.ndimension() == 1: # (1, )
                 grad = torch.autograd.grad(value, [ipt, ], create_graph=True)[0] # (nx, 1)
             elif value.ndimension() == 2: # (nf, 1)
-                grad = torch.zeros([nf, nx]) # (nf, nx)
+                grad = torch.zeros([nf, nx], device=_device) # (nf, nx)
                 for i in range(nf): grad[i] = torch.autograd.grad(value[i], [ipt, ], create_graph=True)[0].flatten()
             
             if order == 1: return grad # (nx, 1) / (nf, nx)
 
             if value.ndimension() == 1: # (nx, 1)
-                hessian = torch.zeros([nx, nx])
+                hessian = torch.zeros([nx, nx], device=_device)
                 for i in range(nx): hessian[i] = torch.autograd.grad(grad[i], [ipt, ], retain_graph=True, create_graph=True)[0].flatten()
             elif value.ndimension() == 2: # (nf, nx)
-                hessian = torch.zeros([nf, nx, nx])
+                hessian = torch.zeros([nf, nx, nx], device=_device)
                 for i in range(nf):
                     for j in range(nx):
                         hessian[i, j] = torch.autograd.grad(grad[i, j], [ipt, ], retain_graph=True, create_graph=True)[0].flatten()

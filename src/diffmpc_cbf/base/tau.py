@@ -16,7 +16,7 @@ class Tau:
             nu = ntau - nx; T = T_-1
         else:
             nu = ntau - nx
-            tau = torch.concat([tau, torch.zeros(nu)])
+            tau = torch.concat([tau, torch.zeros(nu, device=tau.device)])
             tau = tau.reshape(-1, ntau)
             T = tau.shape[0]-1
         return cls(nx, nu, T, tau)
@@ -123,8 +123,17 @@ class Tau:
         return self._tau.requires_grad_(mode)
 
     def detach(self) -> Tensor:
-        self._tau = self._tau.detach()
+        _tau = Tau(self._nx, self._nu, self._T, self._tau.detach().clone())
+        _tau._is_flatten = self._is_flatten
+        return _tau
+
+    def to(self, device: Optional[torch.device]=None, dtype: Optional[torch.dtype]=None) -> Tensor:
+        self._tau = self._tau.to(device=device, dtype=dtype)
         return self
+
+    @property
+    def device(self) -> torch.device:
+        return self._tau.device
 
     def _build(self, tau_init: Optional[Tensor]):
         # (T+1, ntau)

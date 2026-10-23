@@ -2,10 +2,12 @@ from abc import ABC, abstractmethod
 from typing import Dict, Tuple, Union, Optional, Callable, Any
 import torch
 from torch import Tensor
+import torch.nn as nn
 from ..base import DerivativesFunctionWrapper
 
-class Cost(ABC):
+class Cost(ABC, nn.Module):
     def __init__(self, nx: int, nu: int, T: int):
+        super().__init__()
         self._nx = nx; self._nu = nu; self._T = T; self._ntau = self._nx + self._nu
         self._stage_cost_function = DerivativesFunctionWrapper(self._define_stage_cost_function)
         self._terminal_cost_function = DerivativesFunctionWrapper(self._define_terminal_cost_function)
