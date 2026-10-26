@@ -20,15 +20,16 @@ class Tau:
 
     @classmethod
     def build_from_tensor(cls, tau: Tensor, nx: int, ntau: Optional[int]=None):
+        _device, _dtype = tau.device, tau.dtype
         if ntau is None:
             T_, ntau = tau.shape
             nu = ntau - nx; T = T_-1
         else:
             nu = ntau - nx
-            tau = torch.concat([tau, torch.zeros(nu, device=tau.device)])
+            tau = torch.concat([tau, torch.zeros(nu, device=_device, dtype=_dtype)])
             tau = tau.reshape(-1, ntau)
             T = tau.shape[0]-1
-        return cls(nx, nu, T, tau)
+        return cls(nx, nu, T, tau, _device, _dtype)
 
     def reset(self, tau_init: Optional[Tensor]):
         self._is_flatten: bool = False
@@ -74,6 +75,9 @@ class Tau:
         tau_other.recover()
         return self
 
+    def norm(self, p: int=2) -> float:
+        return torch.norm(self._tau, p=p)
+
     def get_tau(self, t: int) -> Tensor:
         tau = self._tau[t*self._ntau: (t+1)*self._ntau] if self._is_flatten else \
         self._tau[t]
@@ -89,8 +93,12 @@ class Tau:
         self._tau[t, self._nx:]
         return u.unsqueeze(-1) # (nu, 1)
     
-    def set_state_init(self, x0: Tensor): # (nx, )
+    def set_state_init(self, x0: Tensor, need_shift: bool=False): # (nx, )
         self._tau[0, :self._nx] = x0
+        if need_shift:
+            self._tau[:self._T, self._nx:] = self._tau[1:self._T+1, self._nx:].clone()
+        else:
+            self._tau[:, self._nx:] = torch.zeros([self._T+1, self._nu], device=self._device, dtype=self._dtype)
 
     def set_tau(self, tau: Tensor):
         self._tau = tau
@@ -110,7 +118,7 @@ class Tau:
             self._tau[t*self._ntau+self._nx: (t+1)*self._ntau] = u
         else:
             self._tau[t, self._nx:] = u
-        return u
+        return u        
 
     def flatten(self, is_clip: bool=True) -> Tensor:
         if self._is_flatten: return self._tau
@@ -138,15 +146,21 @@ class Tau:
 
     def to(self, device: Optional[torch.device]=None, dtype: Optional[torch.dtype]=None) -> Tensor:
         self._tau = self._tau.to(device=device, dtype=dtype)
+        if device is not None: self._device = device
+        if dtype is not None: self._dtype = dtype
         return self
 
     @property
     def device(self) -> torch.device:
         return self._tau.device
 
+    @property
+    def dtype(self) -> torch.dtype:
+        return self._tau.dtype
+
     def _build(self, tau_init: Optional[Tensor]):
         # (T+1, ntau)
-        self._tau = torch.zeros([self._T+1, self._ntau], self._device, self._dtype) \
+        self._tau = torch.zeros([self._T+1, self._ntau], device=self._device, dtype=self._dtype) \
         if tau_init is None else tau_init.clone()
         self._is_flatten = False
 

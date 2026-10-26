@@ -37,6 +37,8 @@ def convert_tensor_iteration(root: Any, device: torch.device, dtype: torch.dtype
         return torch.from_numpy(root.copy()).to(device=device, dtype=dtype)
     elif isinstance(root, list):
         return [convert_tensor_iteration(e, device, dtype) for e in root]
+    elif isinstance(root, tuple):
+        return tuple([convert_tensor_iteration(e, device, dtype) for e in root])
     elif isinstance(root, dict):
         return {k: convert_tensor_iteration(v, device, dtype) for k, v in root.items()}
     else:

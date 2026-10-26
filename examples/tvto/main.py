@@ -1,4 +1,4 @@
-from diffmpc_cbf import DiffMPCBFs, Tau
+from diffmpc_cbf import DiffMPCBF, Tau
 from diffmpc_cbf.utils import *
 import torch
 from torch import Tensor
@@ -9,13 +9,14 @@ from env import Env
 from typing import List
 from datetime import datetime
 import matplotlib.pyplot as plt
+import time
 
 def get_timenow() -> str:
     return datetime.now().strftime('%H:%M:%S')
 
 def train(
         env: Env,
-        mpc: DiffMPCBFs,
+        mpc: DiffMPCBF,
         barrier: TvToBarrier,
         pref: Tensor,
         nx: int,
@@ -39,8 +40,10 @@ def train(
     optimizer = torch.optim.Adam(mpc.parameters(), lr=lr)
 
     # set loss
+    start = time.time()
     for epoch in range(num_epoch):
         env.reset()
+        mpc.reset()
 
         xs_list: List[Tensor] = []
         xs_real_list: List[Tensor] = []
@@ -54,7 +57,7 @@ def train(
                 'cost': {'pref': pref, 'obs_info': _obs_info_ts},
                 'barrier': {'obs_info': _obs_info_ts, 'radius_agent': _radius_agent_ts, 'gamma': _gamma_ts},
             }
-            x = torch.from_numpy(env.state.copy()).requires_grad_(True).to(device)
+            x = torch.from_numpy(env.state.copy()).requires_grad_(True).to(device=device, dtype=dtype)
             tau = mpc.forward(x, params)
 
             # interact with env
@@ -63,7 +66,7 @@ def train(
             # append data
             xs_list.append(tau.x[1])
             us_list.append(tau.u[0])
-            bs_list.append(barrier.forward(tau.x[1].reshape(-1, 1), tcon(params['barrier'], 1, device)).flatten())
+            bs_list.append(barrier.forward(tau.x[1].reshape(-1, 1), tcon(params['barrier'], 1, device, dtype)).flatten())
             xs_real_list.append(torch.from_numpy(x.copy()).flatten().to(device))
             print(f'Epoch{epoch}: {k} / {N-1} finished\n')
 
@@ -89,20 +92,24 @@ def train(
         with open('./log/train.txt', mode='a', encoding='utf-8') as writer:
             writer.write(f'[{get_timenow()}] Epoch: {epoch}, loss: {loss:4f}, {loss_obj:4f} | {loss_control:4f} | {loss_safe:4f} | {loss_dynamic:4f}\n')
 
+    end = time.time()
+    with open('./log/train.txt', mode='a', encoding='utf-8') as writer:
+        writer.write(f'[{get_timenow()}] total time: {end-start}\n')
+
     return loss_list
 
 
 def main():
     # basic environment set
     torch.manual_seed(1)
-    device: torch.device = torch.device('cuda')
+    device: torch.device = torch.device('cpu')
     dtype: torch.dtype = torch.float32
     nx: int = 4
     nu: int = 2
     nb: int = 2
     T: int  = 5
     delta_t: float = 0.05
-    N: int  = 20
+    N: int  = 10
     ntau = nx + nu
     nl = T * nu
     # build mpc-cbf solver
@@ -116,17 +123,18 @@ def main():
     pref      = torch.tensor([[1.], [1.]], requires_grad=True).to(device)
     gamma: float = 0.5
 
-    mpc = DiffMPCBFs(
-        nx = nx,
-        nu = nu,
-        nb = nb,
-        T = T,
+    mpc = DiffMPCBF(
+        nx         = nx,
+        nu         = nu,
+        nb         = nb,
+        T          = T,
         batch_size = 1,
-        cost = cost,
-        dynamic = dynamic,
-        barrier = barrier,
-        umin = umin,
-        umax = umax,
+        cost       = cost,
+        dynamic    = dynamic,
+        barrier    = barrier,
+        umin       = umin,
+        umax       = umax,
+        dtype      = dtype,
     )
     mpc.to(device)
     

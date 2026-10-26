@@ -60,14 +60,15 @@ class CircObs:
         ])
         return self._p
 
-    def predict(self, T: int) -> List[Dict]:
+    def predict(self, T: int) -> Tuple[ndarray, ndarray]:
         _num = self._clock.num
         Ax, Ay, Ax_delta, Ay_delta = self._A
         Bx, By, Bx_delta, By_delta = self._B
         omegax, omegay, omegax_delta1, omegax_delta2, omegay_delta1, omegay_delta2 = self._omega
         phix, phiy = self._phi
         phix_delta1, phix_delta2, phiy_delta1, phiy_delta2 = self._phi_delta
-        _ps: List[Dict] = []
+        ps: ndarray = np.zeros([T, 2])
+        rs: ndarray = np.zeros([T, ])
         # iteration
         for i in range(T):
             _t = _num * self._clock.delta_t
@@ -78,9 +79,9 @@ class CircObs:
                 Ax_delta*np.sin(omegax_delta1*_t+phix_delta1) + Bx_delta*np.sin(omegax_delta2*_t+phix_delta2),
                 Ay_delta*np.sin(omegay_delta1*_t+phiy_delta1) + By_delta*np.sin(omegay_delta2*_t+phiy_delta2),
             ])
-            _ps.append({'state': _p.reshape(-1, 1), 'radius': self.radius_ws})
+            ps[i] = _p; rs[i] = self.radius_ws
             _num += 1
-        return _ps
+        return ps, rs
 
     def reset(self):
         self._phi_delta = np.random.uniform(0, 2*np.pi, [4])
@@ -230,8 +231,14 @@ class Env:
         _circs.append(self._circ_agt)
         return _circs
 
-    def get_obs_info(self, T: int) -> List[List[Dict]]:
-        return [o.predict(T) for o in self._obs]
+    def get_obs_info(self, T: int) -> ndarray:
+        _nb = len(self._obs)
+        pss = np.zeros([_nb, T, 2])
+        rss = np.zeros([_nb, T,])
+        for i in range(_nb):
+            ps, rs = self._obs[i].predict(T)
+            pss[i] = ps; rss[i] = rs
+        return pss, rss # (nb, T, 2), (nb, T)
 
     def _detect_collision(self) -> bool:
         for o in self._obs:

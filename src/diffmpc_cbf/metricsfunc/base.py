@@ -35,8 +35,9 @@ class MetricFunction:
             params: Optional[Dict[str, Any]]=None,
             dveq: Optional[Tensor]=None,
             dvneq: Optional[Tensor]=None,
-        ) -> float: # (T*ntau+nx)
-        if not (tau.device == self._device and tau.dtype == self._dtype): raise ValueError(f'device and dtype of tau is {x0.device} and {x0.dtype}, respectively, not match DiffMPC-CBFs device {self._dtype} and dtype {self._dtype}.')
+            only_res: bool=False,
+        ) -> Union[float, Tensor]: # (T*ntau+nx)
+        if not (tau.device.type == self._device.type and tau.dtype == self._dtype): raise ValueError(f'device and dtype of tau is {x0.device} and {x0.dtype}, respectively, not match DiffMPC-CBFs device {self._dtype} and dtype {self._dtype}.')
         def _torch_zeros(size): return torch.zeros(size, device=self._device, dtype=self._dtype)
         metric: float        = 0.0
         h: Tensor            = _torch_zeros([(self._T+1)*self._nx])
@@ -64,10 +65,12 @@ class MetricFunction:
         
         # equation & inequation residual
         res = torch.stack([
-            torch.linalg.norm(h, ord=1),
-            torch.linalg.norm(torch.clamp(g_cbf, min=0.), ord=1),
-            torch.linalg.norm(torch.clamp(g_boundary, min=0.), ord=1),
+            torch.norm(h, p=1),
+            torch.norm(torch.clamp(g_cbf, min=0.), p=1),
+            torch.norm(torch.clamp(g_boundary, min=0.), p=1),
         ]) # (3, 1)
+        if only_res: return res
+
         weight = torch.stack([
             self._get_weight(self._weight.get('equation'), dveq),
             self._get_weight(self._weight.get('inequation_cbf'), dvneq[:self._T*self._nb]),
@@ -75,6 +78,11 @@ class MetricFunction:
         ]).reshape(1, -1) # (1, 3)
         metric += (weight @ res).item()
         return metric
+
+    def to(self, device: Optional[torch.device]=None, dtype: Optional[torch.dtype]=None) -> Tensor:
+        if device is not None: self._device = device
+        if dtype is not None: self._dtype = dtype
+        return self
 
     def _pcon(self, params: Dict[str, Any], addition_params: Dict[str, Any], device: torch.device):
         return {**params, **convert_tensor_iteration(addition_params, device)}
@@ -84,7 +92,7 @@ class MetricFunction:
         return {**params, **{'t': t, 't_ts': t_ts}}
 
     def _get_weight(self, w: float, dv: Optional[Tensor]) -> Tensor:
-        w_ts = convert_tensor_iteration(w, dv.device)
+        w_ts = convert_tensor_iteration(w, self._device, self._dtype)
         if dv is None:
             return w_ts
         return torch.max(w_ts, 1.1*dv.abs().max())

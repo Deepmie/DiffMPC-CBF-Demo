@@ -41,5 +41,5 @@ class DeltaNetwork(nn.Module):
             nn.Linear(8, 1),
         )
 
-    def forward(self, x: Tensor) -> Tensor: # (3, )
+    def forward(self, x: Tensor) -> Tensor: # (1, )
         return 0.02*torch.sigmoid(self._net(x))

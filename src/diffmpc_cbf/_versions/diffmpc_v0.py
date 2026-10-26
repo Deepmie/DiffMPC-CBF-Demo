@@ -1,6 +1,6 @@
-from . import Cost, Dynamic, MetricFunction
-from .base import Tau
-from .utils import *
+from .. import Cost, Dynamic, MetricFunction
+from ..base import Tau
+from ..utils import *
 import torch
 from torch import Tensor
 from typing import Dict, Tuple, Optional, cast
