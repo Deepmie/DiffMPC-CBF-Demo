@@ -1,5 +1,5 @@
 from diffmpc_cbf import DiffMPCBFs, Tau
-from diffmpc_cbf.utils import plot_trajectory, convert_tensor_iteration
+from diffmpc_cbf.utils import *
 import torch
 from torch import Tensor
 import numpy as np
@@ -10,7 +10,8 @@ from typing import List
 from datetime import datetime
 import matplotlib.pyplot as plt
 
-torch.cuda.is_available()
+def get_timenow() -> str:
+    return datetime.now().strftime('%H:%M:%S')
 
 def train(
         env: Env,
@@ -27,9 +28,10 @@ def train(
         lr: float,
         loss_weight: List[float],
         device: torch.device,
+        dtype: torch.dtype,
     ):
     with open('./log/train.txt', mode='w', encoding='utf-8') as writer:
-        writer.write('Start to record\n')
+        writer.write(f'[{get_timenow()}] Start to record\n')
 
     w1, w2, w3 = loss_weight
     loss_list: List[float] = []
@@ -47,9 +49,10 @@ def train(
         # one episode
         for k in range(N-1):
             _obs_info = env.get_obs_info(T+1)
+            _obs_info_ts, _radius_agent_ts, _gamma_ts = convert_any_to_tensor_batch([_obs_info, env.radius_agent, gamma], device, dtype)
             params = {
-                'cost': {'pref': pref, 'obs_info': _obs_info},
-                'barrier': {'obs_info': _obs_info, 'radius_agent': env.radius_agent, 'gamma': gamma},
+                'cost': {'pref': pref, 'obs_info': _obs_info_ts},
+                'barrier': {'obs_info': _obs_info_ts, 'radius_agent': _radius_agent_ts, 'gamma': _gamma_ts},
             }
             x = torch.from_numpy(env.state.copy()).requires_grad_(True).to(device)
             tau = mpc.forward(x, params)
@@ -60,8 +63,9 @@ def train(
             # append data
             xs_list.append(tau.x[1])
             us_list.append(tau.u[0])
-            bs_list.append(barrier.forward(tau.x[1].reshape(-1, 1), {**params['barrier'], **convert_tensor_iteration({'t': 1}, device)}).flatten())
+            bs_list.append(barrier.forward(tau.x[1].reshape(-1, 1), tcon(params['barrier'], 1, device)).flatten())
             xs_real_list.append(torch.from_numpy(x.copy()).flatten().to(device))
+            print(f'Epoch{epoch}: {k} / {N-1} finished\n')
 
         xs = torch.stack(xs_list)
         us = torch.stack(us_list)
@@ -82,9 +86,8 @@ def train(
         optimizer.step()
 
         # record loss
-        time = datetime.now().strftime('%H:%M:%S')
         with open('./log/train.txt', mode='a', encoding='utf-8') as writer:
-            writer.write(f'[{time}] Epoch: {epoch}, loss: {loss:4f}, {loss_obj:4f} | {loss_control:4f} | {loss_safe:4f} | {loss_dynamic:4f}\n')
+            writer.write(f'[{get_timenow()}] Epoch: {epoch}, loss: {loss:4f}, {loss_obj:4f} | {loss_control:4f} | {loss_safe:4f} | {loss_dynamic:4f}\n')
 
     return loss_list
 
@@ -93,6 +96,7 @@ def main():
     # basic environment set
     torch.manual_seed(1)
     device: torch.device = torch.device('cuda')
+    dtype: torch.dtype = torch.float32
     nx: int = 4
     nu: int = 2
     nb: int = 2
@@ -147,6 +151,7 @@ def main():
         lr=1e-3,
         loss_weight=[1., 0.5, 0.5],
         device=device,
+        dtype=dtype,
     )
 
     fig, ax = plt.subplots(figsize=(10, 8))

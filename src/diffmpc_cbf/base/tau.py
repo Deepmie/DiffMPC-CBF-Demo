@@ -3,10 +3,19 @@ import torch
 from torch import Tensor
 
 class Tau:
-    def __init__(self, nx: int, nu: int, T: int, tau_init: Optional[Tensor]=None):
+    def __init__(
+            self,
+            nx: int,
+            nu: int,
+            T: int,
+            tau_init: Optional[Tensor]=None,
+            device: torch.device = torch.device('cpu'),
+            dtype: torch.dtype = torch.float32,
+        ):
         self._nx = nx; self._nu = nu; self._T = T
         self._ntau = self._nx + self._nu
         self._var_dims = self._T*self._ntau + self._nx
+        self._device = device; self._dtype = dtype
         self.reset(tau_init)
 
     @classmethod
@@ -137,7 +146,8 @@ class Tau:
 
     def _build(self, tau_init: Optional[Tensor]):
         # (T+1, ntau)
-        self._tau = torch.zeros([self._T+1, self._ntau]) if tau_init is None else tau_init.clone()
+        self._tau = torch.zeros([self._T+1, self._ntau], self._device, self._dtype) \
+        if tau_init is None else tau_init.clone()
         self._is_flatten = False
 
     @property

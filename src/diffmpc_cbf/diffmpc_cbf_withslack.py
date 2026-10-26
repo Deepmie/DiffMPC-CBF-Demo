@@ -25,33 +25,37 @@ class DiffMPCBFs(nn.Module):
         iter_nums: int = 10,
         line_search_max_num: int = 5,
         line_search_decay_rate: float = 0.5,
+        device: torch.device = torch.device('cpu'),
+        dtype: torch.dtype = torch.float32,
     ):
         super().__init__()
         self._nx = nx; self._nu = nu; self._nb = nb; self._T = T; self._batch_size = batch_size; self._ntau = self._nx + self._nu; self._var_dims = self._T*self._ntau+self._nx
-        self._cost = cost; self._dynamic = dynamic; self._barrier = barrier; self._umin = umin; self._umax = umax
+        self._cost = cost; self._dynamic = dynamic; self._barrier = barrier
+        self._umin = umin; self._umax = umax
         self._iter_nums = iter_nums; self._line_search_max_num = line_search_max_num; self._line_search_decay_rate = line_search_decay_rate; self._slack_weight = slack_weight
-        self._metricfunc = MetricFunction(nx, nu, nb, T, self._cost, self._dynamic, self._barrier, self._umin, self._umax, metric_weight)
+        self._metricfunc = MetricFunction(nx, nu, nb, T, self._cost, self._dynamic, self._barrier, self._umin, self._umax, metric_weight, device, dtype)
         self._tau = Tau(self._nx, self._nu, self._T)
+        self._device = device; self._dtype = dtype
 
     def forward(self, x0: Tensor, params: Optional[Dict[str, Tensor]]=None) -> Tau:
-        _device = x0.device
-        params  = self._preprocess_params(params, _device)
+        if not (x0.device == self._device and x0.dtype == self._dtype): raise ValueError(f'device and dtype of x is {x0.device} and {x0.dtype}, respectively, not match DiffMPC-CBFs device {self._dtype} and dtype {self._dtype}.')
+        params  = self._preprocess_params(params)
         if x0.ndimension() == 1: x0 = x0.unsqueeze(-1)
         
         # iter for searching fix point tau_star
         with torch.no_grad():
             self._tau.set_state_init(x0.flatten())
-            dveq: Tensor = self._get_init_dveq(_device)
-            dvneq: Tensor = self._get_init_dvneq(_device)
+            dveq: Tensor = self._get_init_dveq()
+            dvneq: Tensor = self._get_init_dvneq()
             for t in range(self._T):
-                self._tau.set_state(self._dynamic.forward(self._tau[t], self._pcon(params['dynamic'], {'t': t}, _device)).flatten(), t+1)
+                self._tau.set_state(self._dynamic.forward(self._tau[t], self._tcon(params['dynamic'], t)).flatten(), t+1)
             
             for i in range(self._iter_nums):
                 alpha: float = 1.0
                 Q, p, G, q, A, b = self._build_sqp_params(x0, self._tau, dveq, dvneq, params)
                 zeta_delta, dveq_qp, dvneq_qp = QPFunction(eps=1e-12, verbose=0, maxIter=20)(Q, p, G, q, A, b)
                 zeta_delta, dveq_qp, dvneq_qp = self._qp_var_post_process([zeta_delta, dveq_qp, dvneq_qp])
-                tau_delta = Tau.build_from_tensor(zeta_delta[:self._var_dims], self._nx, self._ntau).to(_device)
+                tau_delta = Tau.build_from_tensor(zeta_delta[:self._var_dims], self._nx, self._ntau).to()
                 dveq_delta = dveq_qp - dveq
                 dvneq_delta = dvneq_qp - dvneq
 
@@ -70,7 +74,7 @@ class DiffMPCBFs(nn.Module):
         # solve the last qp
         Hl, Jl, Jg, g, Jh, h = self._build_sqp_params(x0, tau_star, dveq_star, dvneq_star, params)
         zeta_delta, _, _ = QPFunction(eps=1e-6, verbose=0, maxIter=25)(Hl, Jl, Jg, -g, Jh, -h); zeta_delta = cast(Tensor, zeta_delta)
-        tau_delta = Tau.build_from_tensor(zeta_delta.flatten()[:self._var_dims], self._nx, self._ntau).to(_device)
+        tau_delta = Tau.build_from_tensor(zeta_delta.flatten()[:self._var_dims], self._nx, self._ntau).to()
         return tau_star + tau_delta
 
     def _build_sqp_params(
@@ -81,10 +85,9 @@ class DiffMPCBFs(nn.Module):
             dvneq: Tensor,
             params: Optional[Dict[str, Dict[str, Any]]]
         ) -> Tuple[Tensor]:
-        _device = x0.device
-        def _torch_zeros(size): return torch.zeros(size, device=_device)
-        def _torch_ones(size): return torch.ones(size, device=_device)
-        def _torch_eyes(n): return torch.eye(n, device=_device)
+        def _torch_zeros(size): return torch.zeros(size, device=self._device, dtype=self._dtype)
+        def _torch_ones(size): return torch.ones(size, device=self._device, dtype=self._dtype)
+        def _torch_eyes(n): return torch.eye(n, device=self._device, dtype=self._dtype)
 
         Jl: Tensor          = _torch_zeros([self._var_dims])
         Hl: Tensor          = _torch_zeros([self._var_dims, self._var_dims])
@@ -106,42 +109,42 @@ class DiffMPCBFs(nn.Module):
         gamma: float = barrier_params.get('gamma')
         for t in range(self._T+1):
             # cost Jacobian
-            if t < self._T: Jl[t*self._ntau: (t+1)*self._ntau] = self._cost.get_stage_cost(_tau[t], self._pcon(cost_params, {'t': t}, _device), order=1).flatten()
-            if t == self._T: Jl[self._T*self._ntau: self._var_dims] = self._cost.get_terminal_cost(_tau.get_state(t), self._pcon(cost_params, {'t': self._T}, _device), order=1).flatten()
+            if t < self._T: Jl[t*self._ntau: (t+1)*self._ntau] = self._cost.get_stage_cost(_tau[t], self._tcon(cost_params, t), order=1).flatten()
+            if t == self._T: Jl[self._T*self._ntau: self._var_dims] = self._cost.get_terminal_cost(_tau.get_state(t), self._tcon(cost_params, self._T), order=1).flatten()
 
             # cost Hessian
             if t < self._T:
                 Hl[t*self._ntau: (t+1)*self._ntau, t*self._ntau: (t+1)*self._ntau] = \
-                self._cost.get_stage_cost(_tau[t], self._pcon(cost_params, {'t': t}, _device), order=2) + \
-                (dveq[(t+1)*self._nx: (t+2)*self._nx].reshape(-1, 1, 1) * self._dynamic.forward(_tau[t], self._pcon(dynamic_params, {'t': t}, _device), order=2)).sum(dim=0)
+                self._cost.get_stage_cost(_tau[t], self._tcon(cost_params, t), order=2) + \
+                (dveq[(t+1)*self._nx: (t+2)*self._nx].reshape(-1, 1, 1) * self._dynamic.forward(_tau[t], self._tcon(dynamic_params, t), order=2)).sum(dim=0)
 
             if t == self._T:
-                Hl[self._T*self._ntau: self._var_dims, self._T*self._ntau: self._var_dims] = self._cost.get_terminal_cost(_tau.get_state(self._T), self._pcon(cost_params, {'t': self._T}, _device), order=2)
+                Hl[self._T*self._ntau: self._var_dims, self._T*self._ntau: self._var_dims] = self._cost.get_terminal_cost(_tau.get_state(self._T), self._tcon(cost_params, self._T), order=2)
 
             if t == 0:
                 Hl[t*self._ntau: (t+1)*self._ntau, t*self._ntau: (t+1)*self._ntau] += \
                 ((1-gamma) * dvneq[t*self._nb: (t+1)*self._nb].reshape(-1, 1, 1) * \
-                cx.unsqueeze(0) @ self._barrier.forward(_tau.get_state(t), self._pcon(barrier_params, {'t': t}, _device), order=2) @ cx.T.unsqueeze(0)).sum(dim=0)
+                cx.unsqueeze(0) @ self._barrier.forward(_tau.get_state(t), self._tcon(barrier_params, t), order=2) @ cx.T.unsqueeze(0)).sum(dim=0)
             else:
                 _cx = cx if t < self._T else cxT
                 Hl[t*self._ntau: (t+1)*self._ntau, t*self._ntau: (t+1)*self._ntau] += \
                 ((-dvneq[(t-1)*self._nb: t*self._nb] + (1-gamma) * dvneq[t*self._nb: (t+1)*self._nb]).reshape(-1, 1, 1) * \
-                _cx.unsqueeze(0) @ self._barrier.forward(_tau.get_state(t), self._pcon(barrier_params, {'t': t}, _device), order=2) @ _cx.T.unsqueeze(0)).sum(dim=0)
+                _cx.unsqueeze(0) @ self._barrier.forward(_tau.get_state(t), self._tcon(barrier_params, t), order=2) @ _cx.T.unsqueeze(0)).sum(dim=0)
             
             # equation Jacobian
             Jh[t*self._nx: (t+1)*self._nx, t*self._ntau: (t+1)*self._ntau] = -cx.T if t < self._T else -cxT.T
-            if t < self._T: Jh[(t+1)*self._nx: (t+2)*self._nx, t*self._ntau: (t+1)*self._ntau] = self._dynamic.forward(_tau[t], self._pcon(dynamic_params, {'t': t}, _device), order=1)
+            if t < self._T: Jh[(t+1)*self._nx: (t+2)*self._nx, t*self._ntau: (t+1)*self._ntau] = self._dynamic.forward(_tau[t], self._tcon(dynamic_params, t), order=1)
 
             # equation function
-            _state_prev = x0 if t == 0 else self._dynamic.forward(_tau[t-1], self._pcon(dynamic_params, {'t': t-1}, _device))
+            _state_prev = x0 if t == 0 else self._dynamic.forward(_tau[t-1], self._tcon(dynamic_params, t-1))
             h[t*self._nx: (t+1)*self._nx] = (_state_prev - _tau.get_state(t)).flatten()
 
             if t < self._T:
                 # inequation of CBF Jacobian
-                Jg_cbf[t*self._nb: (t+1)*self._nb, t*self._ntau: (t+1)*self._ntau] = (1-gamma)*self._barrier.forward(_tau.get_state(t), self._pcon(barrier_params, {'t': t}, _device), order=1) @ cx.T
-                Jg_cbf[t*self._nb: (t+1)*self._nb, (t+1)*self._ntau: (t+2)*self._ntau] = -self._barrier.forward(_tau.get_state(t+1), self._pcon(barrier_params, {'t': t}, _device), order=1) @ (cx.T if t < self._T-1 else cxT.T)
+                Jg_cbf[t*self._nb: (t+1)*self._nb, t*self._ntau: (t+1)*self._ntau] = (1-gamma)*self._barrier.forward(_tau.get_state(t), self._tcon(barrier_params, t), order=1) @ cx.T
+                Jg_cbf[t*self._nb: (t+1)*self._nb, (t+1)*self._ntau: (t+2)*self._ntau] = -self._barrier.forward(_tau.get_state(t+1), self._tcon(barrier_params, t), order=1) @ (cx.T if t < self._T-1 else cxT.T)
                 # inequation of CBF function
-                g_cbf[t*self._nb: (t+1)*self._nb] = -self._barrier.forward(_tau.get_state(t+1), self._pcon(barrier_params, {'t': t+1}, _device)).flatten() + (1-gamma)*self._barrier.forward(_tau.get_state(t), self._pcon(barrier_params, {'t': t}, _device)).flatten()
+                g_cbf[t*self._nb: (t+1)*self._nb] = -self._barrier.forward(_tau.get_state(t+1), self._tcon(barrier_params, t+1)).flatten() + (1-gamma)*self._barrier.forward(_tau.get_state(t), self._tcon(barrier_params, t)).flatten()
 
                 # inequation of boundary Jacobian
                 Jg_boundary[t*2*self._nu: (t+1)*2*self._nu, t*self._ntau: (t+1)*self._ntau] = torch.concat([-cu.T, cu.T], dim=0)
@@ -175,26 +178,31 @@ class DiffMPCBFs(nn.Module):
         q = torch.concat([-g_cbf, -g_boundary, _torch_zeros([ns])], dim=0)
         return Q, p, G, q, A, b
 
-    def _preprocess_params(self, params: Optional[Dict[str, Any]], device: torch.device) -> Dict:
+    def _preprocess_params(self, params: Optional[Dict[str, Any]]) -> Dict:
         if params is None:
             params = dict()
 
         for key in ['cost', 'dynamic', 'barrier']:
             if key not in params:
                 params[key] = dict()
-        return convert_tensor_iteration(params, device)
+        # return convert_tensor_iteration(params, device)
+        return params
 
-    def _pcon(self, params: Dict[str, Any], addition_params: Dict[str, Any], device: torch.device):
-        return {**params, **convert_tensor_iteration(addition_params, device)}
+    def _tcon(self, params: Dict[str, Any], t: int) -> Dict[str, Any]:
+        t_ts = convert_tensor_iteration(t, self._device, self._dtype)
+        return {**params, **{'t': t, 't_ts': t_ts}}
 
+    def _pcon(self, params: Dict[str, Any], addition_params: Dict[str, Any]):
+        return {**params, **convert_tensor_iteration(addition_params, self._device, self._dtype)}
+    
     def _qp_var_post_process(self, vs: List[Tensor]) -> List[Tensor]:
         return [v.flatten() for v in vs]
     
-    def _get_init_dveq(self, device) -> Tensor:
-        return torch.zeros([(self._T+1)*self._nx, ], device=device)
+    def _get_init_dveq(self) -> Tensor:
+        return torch.zeros([(self._T+1)*self._nx, ], device=self._device, dtype=self._dtype)
 
-    def _get_init_dvneq(self, device) -> Tensor:
-        return torch.zeros([self._T*(2*self._nb+2*self._nu), ], device=device)
+    def _get_init_dvneq(self) -> Tensor:
+        return torch.zeros([self._T*(2*self._nb+2*self._nu), ], device=self._device, dtype=self._dtype)
 
     def to(self, device: Optional[torch.device]=None, dtype: Optional[torch.dtype]=None):
         self._tau.to(device, dtype)

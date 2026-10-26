@@ -23,15 +23,15 @@ class TvToCost(Cost):
         pt, vt, ut = ipt[0: 2], ipt[2: 4], ipt[4: 6]
         pref = params.get('pref') # (2, 1)
         vref = self._kappa * (pref-pt)
-        t: Tensor = params.get('t')
+        t: int = params.get('t'); t_ts: Tensor = params.get('t_ts')
         _obs_info: List[List[Dict]] = params.get('obs_info')
         ctx = [pt-pref, vt]
         for o in _obs_info:
-            ot = o[int(t.item())]
+            ot = o[t]
             os = ot.get('state')
             ctx.append(pt-os)
-        ctx.append(t.reshape(1, 1))
-        ctx = torch.concat(ctx).to(torch.float32).flatten()
+        ctx.append(t_ts.reshape(1, 1))
+        ctx = torch.concat(ctx).flatten()
         hid: Tensor = self.context_network(ctx) # (3, )
         return (0.5*hid[0]*(pt-pref)**2 + 0.5*hid[1]*(vt-vref)**2 + hid[2]*ut**2 + 0.02*(pt-pref)**4).sum(dim=0) # (1, )
     
@@ -40,15 +40,15 @@ class TvToCost(Cost):
         pt, vt = xt[0: 2], xt[2: 4]
         pref = params.get('pref') # (2, 1)
         vref = self._kappa * (pref-pt)
-        t: Tensor = params.get('t')
+        t: int = params.get('t'); t_ts: Tensor = params.get('t_ts')
         _obs_info: List[List[Dict]] = params.get('obs_info')
         ctx = [pt-pref, vt]
         for o in _obs_info:
             ot = o[t]
             os = ot.get('state')
             ctx.append(pt-os)
-        ctx.append(t.reshape(1, 1))
-        ctx = torch.concat(ctx).to(torch.float32).flatten()
+        ctx.append(t_ts.reshape(1, 1))
+        ctx = torch.concat(ctx).flatten()
         hid: Tensor = self.context_network(ctx) # (3, )
         return (5*hid[0]*(pt-pref)**2 + 5*hid[1]*(vt-vref)**2 + 0.2*(pt-pref)**4).sum(dim=0) # (1, )
 
@@ -76,17 +76,17 @@ class TvToBarrier(Barrier):
     def _define_barrier_function(self, xt: Tensor, params: Dict[str, Any]) -> Tensor:
         _device = xt.device
         pt = xt[0: 2]
-        t: Tensor = params.get('t')
+        t: int = params.get('t'); t_ts: Tensor = params.get('t_ts')
         _obs_info: List[List[Dict]] = params.get('obs_info')
         radius_agent: Tensor = params.get('radius_agent')
         res = torch.zeros([self._nb, 1], device=_device)
         for i, o in enumerate(_obs_info):
-            ot   = o[int(t.item())]
+            ot   = o[t]
             os   = ot.get('state')
             orad = ot.get('radius')
             
             pt_delta = pt - os
-            ctx  = torch.concat([pt_delta, torch.linalg.norm(pt_delta).reshape(-1, 1), orad.reshape(-1, 1), t.reshape(1, 1)])
-            _obs_delta: Tensor = self.delta_network(ctx.to(torch.float32).flatten()) # (1, )
+            ctx  = torch.concat([pt_delta, torch.linalg.norm(pt_delta).reshape(-1, 1), orad.reshape(-1, 1), t_ts.reshape(1, 1)])
+            _obs_delta: Tensor = self.delta_network(ctx.flatten()) # (1, )
             res[i] = (pt_delta**2).sum() - (orad+radius_agent+_obs_delta)**2
         return res
