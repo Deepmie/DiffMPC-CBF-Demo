@@ -24,13 +24,15 @@ class MetricFunction:
             dtype: torch.dtype = torch.float32,
         ):
         self._nx = nx; self._nu = nu; self._nb = nb; self._T = T; self._cost = cost; self._dynamic = dynamic; self._barrier = barrier; self._umin = umin; self._umax = umax
-        self._ntau = self._nx + self._nu
+        self._ntau = self._nx + self._nu; self._ns = self._T*self._nb
         self._weight = weight; self._device = device; self._dtype = dtype
-        if not (('equation' in self._weight) and ('inequation_cbf' in self._weight) and ('inequation_boundary' in self._weight)): raise ValueError('Missing Keywords')
+        if not (('equation' in self._weight) and ('inequation_cbf' in self._weight) and ('inequation_boundary' in self._weight) and ('inequation_slack' in self._weight)): raise ValueError('Missing Keywords')
 
     def __call__(
             self,
             tau: Tau,
+            slack: Tensor, # (ns, )
+            slack_weight: List[float],
             x0: Tensor,
             params: Optional[Dict[str, Any]]=None,
             dveq: Optional[Tensor]=None,
@@ -62,20 +64,29 @@ class MetricFunction:
                 # inequation
                 g_cbf[t*self._nb: (t+1)*self._nb] = -self._barrier.forward(tau.get_state(t+1), self._tcon(barrier_params, t+1)).flatten() + (1-gamma)*self._barrier.forward(tau.get_state(t), self._tcon(barrier_params, t)).flatten()
                 g_boundary[t*2*self._nu: (t+1)*2*self._nu] = torch.concat([self._umin-tau.get_control(t).flatten(), tau.get_control(t).flatten()-self._umax]) # (2*nu, )
+
+        # add slack penalty
+        rho1, rho2 = slack_weight
+        metric += rho1*slack.sum(dim=0) + rho2/2*slack.square().sum(dim=0)
         
         # equation & inequation residual
         res = torch.stack([
             torch.norm(h, p=1),
-            torch.norm(torch.clamp(g_cbf, min=0.), p=1),
+            torch.norm(torch.clamp(g_cbf-slack, min=0.), p=1),
             torch.norm(torch.clamp(g_boundary, min=0.), p=1),
-        ]) # (3, 1)
+            torch.norm(torch.clamp(-slack, min=0.), p=1),
+        ]).unsqueeze(-1) # (4, 1)
         if only_res: return res
 
+        _dvneq_cbf      = dvneq[:self._T*self._nb]; _bias = self._T*self._nb
+        _dvneq_boundary = dvneq[_bias: _bias+self._T*2*self._nu]; _bias += self._T*2*self._nu
+        _dvneq_slack    = dvneq[_bias: _bias+self._T*self._nb]
         weight = torch.stack([
             self._get_weight(self._weight.get('equation'), dveq),
-            self._get_weight(self._weight.get('inequation_cbf'), dvneq[:self._T*self._nb]),
-            self._get_weight(self._weight.get('inequation_boundary'), dvneq[self._T*self._nb:]),
-        ]).reshape(1, -1) # (1, 3)
+            self._get_weight(self._weight.get('inequation_cbf'), _dvneq_cbf),
+            self._get_weight(self._weight.get('inequation_boundary'), _dvneq_boundary),
+            self._get_weight(self._weight.get('inequation_slack'), _dvneq_slack),
+        ]).reshape(1, -1) # (1, 4)
         metric += (weight @ res).item()
         return metric
 

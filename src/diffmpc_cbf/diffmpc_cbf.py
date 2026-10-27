@@ -20,8 +20,8 @@ class DiffMPCBF(nn.Module):
         barrier: Barrier,
         umin: Tensor, # (nu, )
         umax: Tensor,
-        metric_weight: Dict[str, float] = {'equation': 10.0, 'inequation_cbf': 5.0, 'inequation_boundary': 5.0},
-        slack_weight: List[float]=[0.2, 0.3],
+        metric_weight: Dict[str, float] = {'equation': 10.0, 'inequation_cbf': 5.0, 'inequation_boundary': 5.0, 'inequation_slack': 2.0},
+        slack_weight: List[float] = [0.2, 0.3],
         min_iter_nums: int = 2,
         max_iter_nums: int = 10,
         eps_tau: float=1e-3,
@@ -32,7 +32,7 @@ class DiffMPCBF(nn.Module):
         dtype: torch.dtype = torch.float32,
     ):
         super().__init__()
-        self._nx = nx; self._nu = nu; self._nb = nb; self._T = T; self._batch_size = batch_size; self._ntau = self._nx + self._nu; self._var_dims = self._T*self._ntau+self._nx
+        self._nx = nx; self._nu = nu; self._nb = nb; self._T = T; self._batch_size = batch_size; self._ntau = self._nx + self._nu; self._var_dims = self._T*self._ntau+self._nx; self._ns = self._T * self._nb
         self._cost = cost; self._dynamic = dynamic; self._barrier = barrier
         self._umin = umin; self._umax = umax
         self._min_iter_nums = min_iter_nums; self._max_iter_nums = max_iter_nums; self._eps_tau = eps_tau; self._eps_lambda = eps_lambda
@@ -50,6 +50,7 @@ class DiffMPCBF(nn.Module):
         # iter for searching fix point tau_star
         with torch.no_grad():
             self._tau.set_state_init(x0.flatten(), need_shift= not self._is_first)
+            self._set_init_slack()
             self._set_init_dveq()
             self._set_init_dvneq()
             for t in range(self._T):
@@ -57,51 +58,58 @@ class DiffMPCBF(nn.Module):
             
             for i in range(self._max_iter_nums):
                 alpha: float = 1.0
-                Q, p, G, q, A, b = self._build_sqp_params(x0, self._tau, self._dveq, self._dvneq, params)
+                Q, p, G, q, A, b = self._build_sqp_params(x0, self._tau, self._slack, self._dveq, self._dvneq, params)
                 zeta_delta, dveq_qp, dvneq_qp = QPFunction(eps=1e-5, verbose=0, maxIter=10)(Q, p, G, q, A, b)
                 zeta_delta, dveq_qp, dvneq_qp = self._qp_var_post_process([zeta_delta, dveq_qp, dvneq_qp])
                 tau_delta = Tau.build_from_tensor(zeta_delta[:self._var_dims], self._nx, self._ntau)
+                slack_delta = zeta_delta[self._var_dims:]
                 dveq_delta = dveq_qp - self._dveq
                 dvneq_delta = dvneq_qp - self._dvneq
 
-                # early stop
-                res = self._metricfunc(self._tau, x0, params, dveq_qp, dvneq_qp, only_res=True)
+                # Early Stop
+                res = self._metricfunc(self._tau, self._slack, self._slack_weight, x0, params, dveq_qp, dvneq_qp, only_res=True)
                 con: Tensor = torch.concat([
                     torch.stack([
                         tau_delta.norm(p=float('inf')),
+                        slack_delta.norm(p=float('inf')),
                         torch.norm(dveq_delta, p=float('inf')),
                         torch.norm(dvneq_delta, p=float('inf')),
-                    ]),
+                    ]).unsqueeze(-1),
                     res,
-                ], dim=0) # (6, 1)
+                ], dim=0) # (8, 1)
                 eps = torch.concat([
                     self._eps_tau * self._torch_ones([1, 1]),
-                    self._eps_lambda * self._torch_ones([5, 1]),
-                ], dim=0) # (6, 1)
-                
+                    self._eps_lambda * self._torch_ones([7, 1]),
+                ], dim=0) # (8, 1)
+
                 if i >= self._min_iter_nums-1 and (con < eps).all():
                     break
 
+                # Line Search
                 for j in range(self._line_search_max_num):
-                    if self._metricfunc(self._tau + alpha*tau_delta, x0, params, dveq_qp, dvneq_qp) < self._metricfunc(self._tau, x0, params, dveq_qp, dvneq_qp):
+                    if self._metricfunc(self._tau + alpha*tau_delta, self._slack + alpha*slack_delta, self._slack_weight, x0, params, dveq_qp, dvneq_qp) < \
+                       self._metricfunc(self._tau, self._slack, self._slack_weight, x0, params, dveq_qp, dvneq_qp):
                         break
                     alpha = self._line_search_decay_rate * alpha
                 # update varible
                 self._tau += alpha * tau_delta
+                self._slack += alpha * slack_delta
                 self._dveq += alpha * dveq_delta
                 self._dvneq += alpha * dvneq_delta
 
         tau_star = self._tau.detach()
+        slack_star = self._slack.detach()
         dveq_star = self._dveq.detach()
         dvneq_star = self._dvneq.detach()
         # solve the last qp
-        Q, p, G, q, A, b = self._build_sqp_params(x0, tau_star, dveq_star, dvneq_star, params)
+        Q, p, G, q, A, b = self._build_sqp_params(x0, tau_star, slack_star, dveq_star, dvneq_star, params)
         zeta_delta, dveq_qp, dvneq_qp = QPFunction(eps=1e-6, verbose=0, maxIter=25)(Q, p, G, q, A, b)
         zeta_delta, dveq_qp, dvneq_qp = self._qp_var_post_process([zeta_delta, dveq_qp, dvneq_qp])
-        tau_delta = Tau.build_from_tensor(zeta_delta[:self._var_dims], self._nx, self._ntau).to()
-        tau_final = tau_star + tau_delta
+        tau_delta = Tau.build_from_tensor(zeta_delta[:self._var_dims], self._nx, self._ntau); slack_delta = zeta_delta[self._var_dims:]
+        tau_final = tau_star + tau_delta; slack_final = slack_star + slack_delta
 
         self._tau = tau_final
+        self._slack = slack_final
         self._dveq = dveq_qp
         self._dvneq = dvneq_qp
         if self._is_first: self._is_first = False # change state
@@ -111,6 +119,7 @@ class DiffMPCBF(nn.Module):
             self,
             x0: Tensor,
             _tau: Tau,
+            _slack: Tensor,
             dveq: Tensor,
             dvneq: Tensor,
             params: Optional[Dict[str, Dict[str, Any]]]
@@ -193,7 +202,7 @@ class DiffMPCBF(nn.Module):
             torch.concat([Hl, self._torch_zeros([self._var_dims, ns])], dim=1),
             torch.concat([self._torch_zeros([ns, self._var_dims]), rho2*self._torch_eyes(ns)], dim=1),
         ], dim=0)
-        p = torch.concat([Jl, rho1*self._torch_ones([ns])])
+        p = torch.concat([Jl, rho1*self._torch_ones([ns])+rho2*_slack])
         A = torch.concat([Jh, self._torch_zeros([Jh.shape[0], ns])], dim=1)
         b = -h
 
@@ -202,7 +211,7 @@ class DiffMPCBF(nn.Module):
             torch.concat([Jg_boundary, self._torch_zeros([Jg_boundary.shape[0], ns])], dim=1), # (xxx, var_dims+ns)
             torch.concat([self._torch_zeros([ns, self._var_dims]), -self._torch_eyes(ns)], dim=1), # (ns, var_dims+ns)
         ], dim=0) # (2ns+xxx)
-        q = torch.concat([-g_cbf, -g_boundary, self._torch_zeros([ns])], dim=0)
+        q = torch.concat([-g_cbf+_slack, -g_boundary, _slack], dim=0)
         return Q, p, G, q, A, b
 
     def reset(self):
@@ -236,6 +245,13 @@ class DiffMPCBF(nn.Module):
     
     def _qp_var_post_process(self, vs: List[Tensor]) -> List[Tensor]:
         return [v.flatten() for v in vs]
+
+    def _set_init_slack(self) -> Tensor:
+        if self._is_first:
+            self._slack = torch.zeros([self._ns ], device=self._device, dtype=self._dtype)
+        else:
+            self._slack[:(self._T-1)*self._nb] = self._slack[self._nb: self._T*self._nb].clone()
+        return self._slack
     
     def _set_init_dveq(self) -> Tensor:
         if self._is_first:
@@ -245,11 +261,12 @@ class DiffMPCBF(nn.Module):
         return self._dveq
 
     def _set_init_dvneq(self) -> Tensor:
-        ndvneq = (2*self._nb+2*self._nu)
         if self._is_first:
-            self._dvneq = torch.zeros([self._T*ndvneq, ], device=self._device, dtype=self._dtype)
+            self._dvneq = torch.zeros([self._T*(2*self._nb+2*self._nu), ], device=self._device, dtype=self._dtype)
         else:
-            self._dvneq[:(self._T-1)*ndvneq] = self._dvneq[ndvneq: self._T*ndvneq].clone()
+            self._dvneq[:(self._T-1)*self._nb] = self._dvneq[self._nb: self._T*self._nb].clone(); _bias = self._T*self._nb
+            self._dvneq[_bias: _bias+(self._T-1)*2*self._nu] = self._dvneq[_bias+2*self._nu: _bias+self._T*2*self._nu].clone(); _bias += self._T*2*self._nu
+            self._dvneq[_bias: _bias+(self._T-1)*self._nb] = self._dvneq[_bias+self._nb: _bias+self._T*self._nb].clone()
         return self._dvneq
 
     def to(self, device: Optional[torch.device]=None, dtype: Optional[torch.dtype]=None):
