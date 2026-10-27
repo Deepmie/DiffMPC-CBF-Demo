@@ -98,7 +98,7 @@ class Tau:
         if need_shift:
             self._tau[:self._T, self._nx:] = self._tau[1:self._T+1, self._nx:].clone()
         else:
-            self._tau[:, self._nx:] = torch.zeros([self._T+1, self._nu], device=self._device, dtype=self._dtype)
+            self._tau[:, self._nx:] = self._torch_zeros([self._T+1, self._nu])
 
     def set_tau(self, tau: Tensor):
         self._tau = tau
@@ -132,15 +132,15 @@ class Tau:
         if not self._is_flatten: return self._tau
         if self._is_clip != is_clip: raise ValueError('clip value set exist conflict')
         self._is_flatten = False
-        if is_clip: self._tau = torch.concat([self._tau, torch.zeros(self._nu)])
+        if is_clip: self._tau = torch.concat([self._tau, self._torch_zeros(self._nu)])
         self._tau = self._tau.reshape(self._T+1, self._ntau)
         return self._tau
 
     def require_grad_(self, mode: bool=True) -> Tensor:
         return self._tau.requires_grad_(mode)
 
-    def detach(self) -> Tensor:
-        _tau = Tau(self._nx, self._nu, self._T, self._tau.detach().clone())
+    def detach(self) -> 'Tau':
+        _tau = Tau(self._nx, self._nu, self._T, self._tau.detach().clone(), self._device, self._dtype)
         _tau._is_flatten = self._is_flatten
         return _tau
 
@@ -160,9 +160,12 @@ class Tau:
 
     def _build(self, tau_init: Optional[Tensor]):
         # (T+1, ntau)
-        self._tau = torch.zeros([self._T+1, self._ntau], device=self._device, dtype=self._dtype) \
+        self._tau = self._torch_zeros([self._T+1, self._ntau]) \
         if tau_init is None else tau_init.clone()
         self._is_flatten = False
+
+    def _torch_zeros(self, size) -> Tensor:
+        return torch.zeros(size, device=self._device, dtype=self._dtype)
 
     @property
     def tau(self):

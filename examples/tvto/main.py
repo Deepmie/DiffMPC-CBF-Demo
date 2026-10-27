@@ -61,14 +61,16 @@ def train(
             tau = mpc.forward(x, params)
 
             # interact with env
-            x, _ = env.step(tau.u[0].cpu().detach().numpy().reshape(-1, 1))
+            x, done = env.step(tau.u[0].cpu().detach().numpy().reshape(-1, 1))
+
             
             # append data
             xs_list.append(tau.x[1])
             us_list.append(tau.u[0])
             bs_list.append(barrier.forward(tau.x[1].reshape(-1, 1), tcon(params['barrier'], 1, device, dtype)).flatten())
-            xs_real_list.append(torch.from_numpy(x.copy()).flatten().to(device))
+            xs_real_list.append(convert_tensor_iteration(x.copy(), device, dtype).flatten())
             print(f'Epoch{epoch}: {k} / {N-1} finished\n')
+            if done: break
 
         xs = torch.stack(xs_list)
         us = torch.stack(us_list)

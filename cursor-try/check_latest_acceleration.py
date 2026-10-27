@@ -4,6 +4,7 @@ import sys
 
 import numpy as np
 import torch
+import importlib
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(ROOT, "examples", "tvto"))
@@ -55,12 +56,9 @@ def test_first_flag_and_metric():
     print("is_first before forward:", mpc._is_first)
     tau = mpc(x, params)
     print("is_first after forward:", mpc._is_first)
-    residual = mpc._metricfunc(
-        tau, x, params, mpc._get_init_dveq(), mpc._get_init_dvneq(),
-        only_res=True,
-    )
-    merit = mpc._metricfunc(
-        tau, x, params, mpc._get_init_dveq(), mpc._get_init_dvneq(),
+    merit, residual = mpc._metricfunc(
+        tau, mpc._slack, mpc._slack_weight, x, params,
+        mpc._dveq, mpc._dvneq, include_res=True,
     )
     print("metric only_res:", residual.shape, residual.tolist())
     print("metric default:", type(merit).__name__,
@@ -79,7 +77,58 @@ def test_barrier_units():
           "agent radius:", params["barrier"]["radius_agent"].item())
 
 
+def test_returned_tau_alias_and_iterations():
+    mod = importlib.import_module("diffmpc_cbf.diffmpc_cbf")
+    original_qp = mod.QPFunction
+    calls = {"n": 0}
+
+    def counted_qp(*args, **kwargs):
+        apply_qp = original_qp(*args, **kwargs)
+
+        def apply(*qp_args, **qp_kwargs):
+            calls["n"] += 1
+            return apply_qp(*qp_args, **qp_kwargs)
+
+        return apply
+
+    mod.QPFunction = counted_qp
+    try:
+        mpc, env, x, params = build_mpc(max_iter=10)
+        tau1 = mpc(x, params)
+        u_view = tau1.u[0]
+        x1_view = tau1.x[1]
+        u_before = u_view.detach().clone()
+        x1_before = x1_view.detach().clone()
+        first_calls = calls["n"]
+
+        # Advance the external environment and build the next obstacle forecast.
+        next_state, _ = env.step(
+            tau1.u[0].detach().numpy().reshape(-1, 1)
+        )
+        obs, radius, gamma = convert_any_to_tensor_batch(
+            [env.get_obs_info(6), env.radius_agent, 0.5],
+            torch.device("cpu"), torch.float32,
+        )
+        params2 = {
+            "cost": {"pref": torch.ones(2, 1), "obs_info": obs},
+            "barrier": {
+                "obs_info": obs, "radius_agent": radius, "gamma": gamma
+            },
+        }
+        mpc(torch.from_numpy(next_state.copy()).float(), params2)
+        print("QP calls first forward (including final QP):", first_calls)
+        print("returned tau u0 changed after next forward:",
+              not torch.allclose(u_view.detach(), u_before),
+              "before", u_before.tolist(), "after", u_view.detach().tolist())
+        print("returned tau x1 changed after next forward:",
+              not torch.allclose(x1_view.detach(), x1_before),
+              "max change", (x1_view.detach() - x1_before).abs().max().item())
+    finally:
+        mod.QPFunction = original_qp
+
+
 if __name__ == "__main__":
     test_tau_shift()
     test_first_flag_and_metric()
     test_barrier_units()
+    test_returned_tau_alias_and_iterations()
