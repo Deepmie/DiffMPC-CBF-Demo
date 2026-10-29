@@ -54,11 +54,14 @@ def build_mpc(max_iter=2):
 def test_first_flag_and_metric():
     mpc, env, x, params = build_mpc(max_iter=1)
     print("is_first before forward:", mpc._is_first)
-    tau = mpc(x, params)
+    tau, status = mpc(x, params)
     print("is_first after forward:", mpc._is_first)
+    print("solver status:", status)
+    h, g_cbf, g_boundary = mpc._get_zero_order_term(tau, x, params)
     merit, residual = mpc._metricfunc(
-        tau, mpc._slack, mpc._slack_weight, x, params,
-        mpc._dveq, mpc._dvneq, include_res=True,
+        tau, mpc._slack, mpc._dveq, mpc._dvneq,
+        h, g_cbf, g_boundary, x, params, mpc._slack_weight,
+        include_res=True,
     )
     print("metric only_res:", residual.shape, residual.tolist())
     print("metric default:", type(merit).__name__,
@@ -94,12 +97,13 @@ def test_returned_tau_alias_and_iterations():
     mod.QPFunction = counted_qp
     try:
         mpc, env, x, params = build_mpc(max_iter=10)
-        tau1 = mpc(x, params)
+        tau1, status1 = mpc(x, params)
         u_view = tau1.u[0]
         x1_view = tau1.x[1]
         u_before = u_view.detach().clone()
         x1_before = x1_view.detach().clone()
         first_calls = calls["n"]
+        print("first solver status:", status1)
 
         # Advance the external environment and build the next obstacle forecast.
         next_state, _ = env.step(

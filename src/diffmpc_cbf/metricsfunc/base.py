@@ -17,15 +17,14 @@ class MetricFunction:
             cost: Cost,
             dynamic: Dynamic,
             barrier: Barrier,
-            umin: Tensor,
-            umax: Tensor,
+            t_ts: Tensor,
             weight: Dict[str, float],
             device: torch.device = torch.device('cpu'),
             dtype: torch.dtype = torch.float32,
         ):
-        self._nx = nx; self._nu = nu; self._nb = nb; self._T = T; self._cost = cost; self._dynamic = dynamic; self._barrier = barrier; self._umin = umin; self._umax = umax
-        self._ntau = self._nx + self._nu; self._ns = self._T*self._nb
-        self._t_ts: Tensor = torch.arange(0, self._T+1, step=1, device=device, dtype=dtype)
+        super().__init__()
+        self._nx = nx; self._nu = nu; self._nb = nb; self._T = T; self._cost = cost; self._dynamic = dynamic; self._barrier = barrier
+        self._ntau = self._nx + self._nu; self._ns = self._T*self._nb; self._t_ts = t_ts.clone()
         self._weight = weight; self._device = device; self._dtype = dtype
         if not (('equation' in self._weight) and ('inequation_cbf' in self._weight) and ('inequation_boundary' in self._weight) and ('inequation_slack' in self._weight)): raise ValueError('Missing Keywords')
 
@@ -76,9 +75,10 @@ class MetricFunction:
         metric += (weight @ res).flatten()
         return (metric, res) if include_res else metric
 
-    def to(self, device: Optional[torch.device]=None, dtype: Optional[torch.dtype]=None) -> Tensor:
+    def to(self, device: Optional[torch.device]=None, dtype: Optional[torch.dtype]=None):
         if device is not None: self._device = device
         if dtype is not None: self._dtype = dtype
+        self._t_ts = self._t_ts.to(device=device, dtype=dtype)
         return self
 
     def _pcon(self, params: Dict[str, Any], addition_params: Dict[str, Any], device: torch.device):

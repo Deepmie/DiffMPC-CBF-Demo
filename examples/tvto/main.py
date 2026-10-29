@@ -58,7 +58,7 @@ def train(
                 'barrier': {'obs_info': _obs_info_ts, 'radius_agent': _radius_agent_ts, 'gamma': _gamma_ts},
             }
             x = torch.from_numpy(env.state.copy()).requires_grad_(True).to(device=device, dtype=dtype)
-            tau = mpc.forward(x, params)
+            tau, _ = mpc.forward(x, params)
 
             # interact with env
             x, done = env.step(tau.u[0].cpu().detach().numpy().reshape(-1, 1))
@@ -104,7 +104,7 @@ def train(
 def main():
     # basic environment set
     torch.manual_seed(1)
-    device: torch.device = torch.device('cpu')
+    device: torch.device = torch.device('cuda', index=0)
     dtype: torch.dtype = torch.float32
     nx: int = 4
     nu: int = 2
@@ -119,10 +119,10 @@ def main():
     dynamic   = TvToDynamic(nx, nu, T, delta_t)
     barrier   = TvToBarrier(nx, nu, T, nb)
 
-    umin      = torch.tensor([-1.0, -1.0]).to(device)
-    umax      = torch.tensor([1.0, 1.0]).to(device)
-    p0        = torch.tensor([[0.], [0.]], requires_grad=True).to(device)
-    pref      = torch.tensor([[1.], [1.]], requires_grad=True).to(device)
+    umin      = torch.tensor([-1.0, -1.0], device=device, dtype=dtype)
+    umax      = torch.tensor([1.0, 1.0], device=device, dtype=dtype)
+    p0        = torch.tensor([[0.], [0.]], device=device, dtype=dtype, requires_grad=True)
+    pref      = torch.tensor([[1.], [1.]], device=device, dtype=dtype, requires_grad=True)
     gamma: float = 0.5
 
     mpc = DiffMPCBF(
