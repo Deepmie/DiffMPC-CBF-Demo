@@ -1,5 +1,6 @@
 from diffmpc_cbf import DiffMPCBF, Tau
 from diffmpc_cbf.utils import *
+from diffmpc_cbf.base import SQPStatus
 import torch
 from torch import Tensor
 import numpy as np
@@ -10,6 +11,7 @@ from typing import List
 from datetime import datetime
 import matplotlib.pyplot as plt
 import time
+import random
 
 def get_timenow() -> str:
     return datetime.now().strftime('%H:%M:%S')
@@ -34,6 +36,7 @@ def train(
     with open('./log/train.txt', mode='w', encoding='utf-8') as writer:
         writer.write(f'[{get_timenow()}] Start to record\n')
 
+    evaluate_num: int = 0
     w1, w2, w3 = loss_weight
     loss_list: List[float] = []
     # set optim
@@ -58,18 +61,18 @@ def train(
                 'barrier': {'obs_info': _obs_info_ts, 'radius_agent': _radius_agent_ts, 'gamma': _gamma_ts},
             }
             x = torch.from_numpy(env.state.copy()).requires_grad_(True).to(device=device, dtype=dtype)
-            tau, _ = mpc.forward(x, params)
+            tau, sqp_status = mpc.forward(x, params)
+            if sqp_status == SQPStatus.LINE_SEARCH_FAILED: raise RuntimeError(f'Linear Search Failed!')
 
             # interact with env
-            x, done = env.step(tau.u[0].cpu().detach().numpy().reshape(-1, 1))
-
+            x_env, done = env.step(tau.u[0].cpu().detach().numpy().reshape(-1, 1))
             
             # append data
             xs_list.append(tau.x[1])
             us_list.append(tau.u[0])
             bs_list.append(barrier.forward(tau.x[1].reshape(-1, 1), tcon(params['barrier'], 1, device, dtype)).flatten())
-            xs_real_list.append(convert_tensor_iteration(x.copy(), device, dtype).flatten())
-            print(f'Epoch{epoch}: {k} / {N-1} finished\n')
+            xs_real_list.append(convert_tensor_iteration(x_env.copy(), device, dtype).flatten())
+            # print(f'Epoch{epoch}: {k} / {N-1} finished\n')
             if done: break
 
         xs = torch.stack(xs_list)
@@ -94,6 +97,26 @@ def train(
         with open('./log/train.txt', mode='a', encoding='utf-8') as writer:
             writer.write(f'[{get_timenow()}] Epoch: {epoch}, loss: {loss:4f}, {loss_obj:4f} | {loss_control:4f} | {loss_safe:4f} | {loss_dynamic:4f}\n')
 
+        # evaluate
+        if (epoch+1) % 2 == 0:
+            xs_eval = eval(
+                env,
+                mpc,
+                barrier,
+                pref,
+                nx,
+                nu,
+                nb,
+                T,
+                gamma,
+                N,
+                device=device,
+                dtype=dtype,
+            )
+            env.show(f'./imgs/tvto_{evaluate_num}.gif')
+            evaluate_num += 1
+
+
     end = time.time()
     with open('./log/train.txt', mode='a', encoding='utf-8') as writer:
         writer.write(f'[{get_timenow()}] total time: {end-start}\n')
@@ -101,29 +124,68 @@ def train(
     return loss_list
 
 
+def eval(
+        env: Env,
+        mpc: DiffMPCBF,
+        barrier: TvToBarrier,
+        pref: Tensor,
+        nx: int,
+        nu: int,
+        nb: int,
+        T: int,
+        gamma: float,
+        N: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> ndarray:
+    env.reset()
+    mpc.reset()
+    xs: List[ndarray] = []
+    for k in range(N-1):
+        _obs_info = env.get_obs_info(T+1)
+        _obs_info_ts, _radius_agent_ts, _gamma_ts = convert_any_to_tensor_batch([_obs_info, env.radius_agent, gamma], device, dtype)
+        params = {
+            'cost': {'pref': pref, 'obs_info': _obs_info_ts},
+            'barrier': {'obs_info': _obs_info_ts, 'radius_agent': _radius_agent_ts, 'gamma': _gamma_ts},
+        }
+        x = torch.from_numpy(env.state.copy()).requires_grad_(True).to(device=device, dtype=dtype)
+        tau, _ = mpc.forward(x, params)
+
+        # interact with env
+        x_env, done = env.step(tau.u[0].cpu().detach().numpy().reshape(-1, 1))
+        if done: break
+        xs.append(env.state.copy())
+    xs = np.stack(xs)
+    return xs
+
 def main():
     # basic environment set
-    torch.manual_seed(1)
-    device: torch.device = torch.device('cuda', index=0)
-    dtype: torch.dtype = torch.float32
+    seed: int = 42
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    
+    # device: torch.device = torch.device('cuda', index=0)
+    device: torch.device = torch.device('cpu')
+    dtype: torch.dtype = torch.float64
     nx: int = 4
     nu: int = 2
     nb: int = 2
-    T: int  = 5
+    T: int  = 15
     delta_t: float = 0.05
-    N: int  = 10
+    N: int  = 80
     ntau = nx + nu
     nl = T * nu
     # build mpc-cbf solver
-    cost      = TvToCost(nx, nu, T)
-    dynamic   = TvToDynamic(nx, nu, T, delta_t)
-    barrier   = TvToBarrier(nx, nu, T, nb)
+    cost      = TvToCost(nx, nu, T).to(device, dtype)
+    dynamic   = TvToDynamic(nx, nu, T, delta_t).to(device, dtype)
+    barrier   = TvToBarrier(nx, nu, T, nb).to(device, dtype)
 
     umin      = torch.tensor([-1.0, -1.0], device=device, dtype=dtype)
     umax      = torch.tensor([1.0, 1.0], device=device, dtype=dtype)
     p0        = torch.tensor([[0.], [0.]], device=device, dtype=dtype, requires_grad=True)
     pref      = torch.tensor([[1.], [1.]], device=device, dtype=dtype, requires_grad=True)
-    gamma: float = 0.5
+    gamma: float = 0.2
 
     mpc = DiffMPCBF(
         nx         = nx,
@@ -157,9 +219,9 @@ def main():
         T,
         gamma,
         N,
-        num_epoch=10,
-        lr=1e-3,
-        loss_weight=[1., 0.5, 0.5],
+        num_epoch=100,
+        lr=5e-4,
+        loss_weight=[1., 1e4, 1e3],
         device=device,
         dtype=dtype,
     )
@@ -168,7 +230,25 @@ def main():
     ax.plot(ls_train, marker='x', alpha=0.5)
     ax.set_xlabel('step'); ax.set_ylabel('loss')
     ax.set_title('Loss Curve')
-    plt.show()
+    fig.savefig('./imgs/loss.png')
+
+    # xs = eval(
+    #     env,
+    #     mpc,
+    #     barrier,
+    #     pref,
+    #     nx,
+    #     nu,
+    #     nb,
+    #     T,
+    #     gamma,
+    #     N,
+    #     device=device,
+    #     dtype=dtype,
+    # )
+    # env.show(f'./imgs/tvto_test.gif')
+
+    
     
 
 if __name__ == '__main__':

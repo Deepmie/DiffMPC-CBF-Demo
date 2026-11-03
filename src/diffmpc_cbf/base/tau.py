@@ -99,7 +99,7 @@ class Tau:
             self._tau[:self._T, self._nx:] = self._tau[1:self._T+1, self._nx:].clone()
         else:
             self._tau[:, self._nx:] = self._torch_zeros([self._T+1, self._nu])
-
+    
     def set_tau(self, tau: Tensor):
         self._tau = tau
         return tau

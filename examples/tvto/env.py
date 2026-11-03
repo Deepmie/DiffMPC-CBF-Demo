@@ -43,6 +43,7 @@ class CircObs:
         self._r = r; self._dr = dr
         self._A = A; self._B = B; self._omega = omega
         self._phi = phi; self._clock = clock
+        self._phi_delta = np.random.uniform(0, 2*np.pi, [4])
 
     def step(self) -> ndarray:
         _t = self._clock.t
@@ -84,7 +85,7 @@ class CircObs:
         return ps, rs
 
     def reset(self):
-        self._phi_delta = np.random.uniform(0, 2*np.pi, [4])
+        # self._phi_delta = np.random.uniform(0, 2*np.pi, [4])
         self.step()
 
     @property
@@ -194,7 +195,7 @@ class Env:
         self._agent_states: List[ndarray] = []
         self._agent_states.append(self._agent.state.flatten())
 
-    def show(self):
+    def show(self, save_path: str):
         self._circs: List[Tuple[Circle]] = []
         fig, ax = plt.subplots(figsize=(10, 6))
         ax.scatter(self._p0[0], self._p0[1], s=15, c='k')
@@ -217,8 +218,8 @@ class Env:
         ax.set_ylim(-0.1, 1.1)
         ax.set_aspect('equal')
 
-        ani = FuncAnimation(fig, self.update, frames=self._clock.num, interval=50, blit=True)
-        ani.save('imgs/tvto.gif', writer=PillowWriter(fps=20))
+        ani = FuncAnimation(fig, self.update, frames=self._clock.num+1, interval=50, blit=True)
+        ani.save(save_path, writer=PillowWriter(fps=20))
 
     def update(self, frame: int) -> List[Tuple[Circle]]:
         _circs: List[Tuple[Circle]] = []

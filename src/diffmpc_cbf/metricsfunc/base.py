@@ -57,10 +57,10 @@ class MetricFunction:
         
         # equation & inequation residual
         res = torch.stack([
-            torch.norm(h, p=float('inf')),
-            torch.norm(torch.clamp(g_cbf-slack, min=0.), p=float('inf')),
-            torch.norm(torch.clamp(g_boundary, min=0.), p=float('inf')),
-            torch.norm(torch.clamp(-slack, min=0.), p=float('inf')),
+            torch.norm(h, p=1),
+            torch.norm(torch.clamp(g_cbf-slack, min=0.), p=1),
+            torch.norm(torch.clamp(g_boundary, min=0.), p=1),
+            torch.norm(torch.clamp(-slack, min=0.), p=1),
         ]).unsqueeze(-1) # (4, 1)
 
         _dvneq_cbf      = dvneq[:self._T*self._nb]; _bias = self._T*self._nb

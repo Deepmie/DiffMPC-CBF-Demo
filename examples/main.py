@@ -10,9 +10,15 @@ class LSP(Enum):
 def test():
     a2 = torch.rand([3, 2])
     print(a2)
-    print(a2.reshape(-1))
 
+    amin = 0.5 * torch.rand(2)
+    amax = 4 * amin
+    a2 = a2.clamp(amin, amax)
+
+    print(amin, amax)
+    print(a2)
 
 
 if __name__ == '__main__':
     print(LSP.CONVERGENCE)
+    test()
