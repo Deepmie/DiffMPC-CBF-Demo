@@ -1,24 +1,23 @@
 import torch
 import torch.nn as nn
 from enum import Enum
+from torch import Tensor
+from torch.func import jacrev, vmap
 
-class LSP(Enum):
-    CONVERGENCE: int = 0
-    FAILURE: int = 1
-    
+def func(x: Tensor) -> Tensor:
+    # x: (3, 2)
+    return torch.concat([
+        x, # (3, 2)
+        x**2, # (3, 2)
+    ], dim=-1) # (3, 4)
 
 def test():
-    a2 = torch.rand([3, 2])
-    print(a2)
+    x = torch.rand([3, 2])
+    v = func(x)
+    J = jacrev(func)(x)
 
-    amin = 0.5 * torch.rand(2)
-    amax = 4 * amin
-    a2 = a2.clamp(amin, amax)
-
-    print(amin, amax)
-    print(a2)
-
+    print(v.shape)
+    print(J.shape)
 
 if __name__ == '__main__':
-    print(LSP.CONVERGENCE)
     test()

@@ -15,7 +15,7 @@ class ContextNetwork(nn.Module):
             nn.Linear(16, 3),
         )
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor) -> Tensor: # ()
         return nn.functional.softplus(self._net(x)) + 1e-3
 
 

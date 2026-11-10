@@ -7,7 +7,7 @@ import numpy as np
 from numpy import ndarray
 from system import TvToCost, TvToDynamic, TvToBarrier
 from env import Env
-from typing import List
+from typing import List, Tuple
 from datetime import datetime
 import matplotlib.pyplot as plt
 import time
@@ -33,6 +33,8 @@ def train(
         device: torch.device,
         dtype: torch.dtype,
     ):
+    ntau = nx + nu
+    nv = ntau + nb
     with open('./log/train.txt', mode='w', encoding='utf-8') as writer:
         writer.write(f'[{get_timenow()}] Start to record\n')
 
@@ -61,18 +63,18 @@ def train(
                 'barrier': {'obs_info': _obs_info_ts, 'radius_agent': _radius_agent_ts, 'gamma': _gamma_ts},
             }
             x = torch.from_numpy(env.state.copy()).requires_grad_(True).to(device=device, dtype=dtype)
-            tau, sqp_status = mpc.forward(x, params)
-            if sqp_status == SQPStatus.LINE_SEARCH_FAILED: raise RuntimeError(f'Linear Search Failed!')
-
+            zeta, sqp_status = mpc.forward(x, params)
+            if sqp_status != SQPStatus.CONVERGED: raise RuntimeError(f'SQP solve Failed!')
+            
             # interact with env
-            x_env, done = env.step(tau.u[0].cpu().detach().numpy().reshape(-1, 1))
+            u_env = zeta[nx: ntau].cpu().detach().numpy().reshape(-1, 1)
+            x_env, done = env.step(u_env)
             
             # append data
-            xs_list.append(tau.x[1])
-            us_list.append(tau.u[0])
-            bs_list.append(barrier.forward(tau.x[1].reshape(-1, 1), tcon(params['barrier'], 1, device, dtype)).flatten())
+            xs_list.append(zeta[nv: nv+nx])
+            us_list.append(zeta[nx: ntau])
+            bs_list.append(barrier.forward(zeta[nv: nv+nx], tcon(params['barrier'], 1, device, dtype)).flatten())
             xs_real_list.append(convert_tensor_iteration(x_env.copy(), device, dtype).flatten())
-            # print(f'Epoch{epoch}: {k} / {N-1} finished\n')
             if done: break
 
         xs = torch.stack(xs_list)
@@ -98,8 +100,9 @@ def train(
             writer.write(f'[{get_timenow()}] Epoch: {epoch}, loss: {loss:4f}, {loss_obj:4f} | {loss_control:4f} | {loss_safe:4f} | {loss_dynamic:4f}\n')
 
         # evaluate
-        if (epoch+1) % 2 == 0:
-            xs_eval = eval(
+        if (epoch+1) % 10 == 0:
+            loss_eval, loss_obj_eval, loss_control_eval, loss_safe_eval, loss_dynamic_eval = \
+            eval(
                 env,
                 mpc,
                 barrier,
@@ -110,9 +113,14 @@ def train(
                 T,
                 gamma,
                 N,
+                loss_weight,
                 device=device,
                 dtype=dtype,
             )
+            # record loss
+            with open('./log/eval.txt', mode='a', encoding='utf-8') as writer:
+                writer.write(f'[{get_timenow()}] Num: {evaluate_num}, loss: {loss_eval:4f}, {loss_obj_eval:4f} | {loss_control_eval:4f} | {loss_safe_eval:4f} | {loss_dynamic_eval:4f}\n')
+
             env.show(f'./imgs/tvto_{evaluate_num}.gif')
             evaluate_num += 1
 
@@ -120,7 +128,6 @@ def train(
     end = time.time()
     with open('./log/train.txt', mode='a', encoding='utf-8') as writer:
         writer.write(f'[{get_timenow()}] total time: {end-start}\n')
-
     return loss_list
 
 
@@ -135,12 +142,21 @@ def eval(
         T: int,
         gamma: float,
         N: int,
+        loss_weight: List[float],
         device: torch.device,
         dtype: torch.dtype,
-    ) -> ndarray:
+    ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+    ntau = nx + nu
+    nv = ntau + nb
+    w1, w2, w3 = loss_weight
     env.reset()
     mpc.reset()
-    xs: List[ndarray] = []
+
+    xs_list: List[Tensor] = []
+    xs_real_list: List[Tensor] = []
+    us_list: List[Tensor] = []
+    bs_list: List[Tensor] = []
+    # one episode
     for k in range(N-1):
         _obs_info = env.get_obs_info(T+1)
         _obs_info_ts, _radius_agent_ts, _gamma_ts = convert_any_to_tensor_batch([_obs_info, env.radius_agent, gamma], device, dtype)
@@ -149,14 +165,32 @@ def eval(
             'barrier': {'obs_info': _obs_info_ts, 'radius_agent': _radius_agent_ts, 'gamma': _gamma_ts},
         }
         x = torch.from_numpy(env.state.copy()).requires_grad_(True).to(device=device, dtype=dtype)
-        tau, _ = mpc.forward(x, params)
+        zeta, sqp_status = mpc.forward(x, params)
+        if sqp_status != SQPStatus.CONVERGED: raise RuntimeError(f'SQP solve Failed!')
 
         # interact with env
-        x_env, done = env.step(tau.u[0].cpu().detach().numpy().reshape(-1, 1))
+        u_env = zeta[nx: ntau].cpu().detach().numpy().reshape(-1, 1)
+        x_env, done = env.step(u_env)
+        
+        # append data
+        xs_list.append(zeta[nv: nv+nx])
+        us_list.append(zeta[nx: ntau])
+        bs_list.append(barrier.forward(zeta[nv: nv+nx], tcon(params['barrier'], 1, device, dtype)).flatten())
+        xs_real_list.append(convert_tensor_iteration(x_env.copy(), device, dtype).flatten())
         if done: break
-        xs.append(env.state.copy())
-    xs = np.stack(xs)
-    return xs
+    
+    xs = torch.stack(xs_list)
+    us = torch.stack(us_list)
+    bs = torch.stack(bs_list)
+    xs_real = torch.stack(xs_real_list)
+
+    loss_obj = (xs[:, 0:2] - pref.reshape(1, -1)).square().mean()
+    loss_control = us.square().mean()
+    loss_safe = (torch.nn.functional.relu(-bs)).square().mean()
+    loss_dynamic = (xs-xs_real).square().mean()
+
+    loss = w1*(loss_obj + loss_control) + w2*loss_safe + w3*loss_dynamic
+    return loss, loss_obj, loss_control, loss_safe, loss_dynamic
 
 def main():
     # basic environment set
@@ -166,7 +200,7 @@ def main():
     torch.manual_seed(seed)
     
     # device: torch.device = torch.device('cuda', index=0)
-    device: torch.device = torch.device('cpu')
+    device: torch.device = torch.device('cuda', index=0)
     dtype: torch.dtype = torch.float64
     nx: int = 4
     nu: int = 2
@@ -225,30 +259,12 @@ def main():
         device=device,
         dtype=dtype,
     )
-
+    
     fig, ax = plt.subplots(figsize=(10, 8))
     ax.plot(ls_train, marker='x', alpha=0.5)
     ax.set_xlabel('step'); ax.set_ylabel('loss')
     ax.set_title('Loss Curve')
     fig.savefig('./imgs/loss.png')
-
-    # xs = eval(
-    #     env,
-    #     mpc,
-    #     barrier,
-    #     pref,
-    #     nx,
-    #     nu,
-    #     nb,
-    #     T,
-    #     gamma,
-    #     N,
-    #     device=device,
-    #     dtype=dtype,
-    # )
-    # env.show(f'./imgs/tvto_test.gif')
-
-    
     
 
 if __name__ == '__main__':

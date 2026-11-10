@@ -5,3 +5,4 @@ old-version
 # refpaper/*.pdf
 pyproject.toml
 /log
+.nimote

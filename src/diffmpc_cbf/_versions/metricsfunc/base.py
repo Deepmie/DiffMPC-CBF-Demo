@@ -1,8 +1,8 @@
-from ..base import Tau
+from ...base import Tau
 from ..cost import Cost
 from ..dynamic import Dynamic
 from ..barrier import Barrier
-from ..utils import *
+from ...utils import *
 from typing import Dict, Tuple, Union, Optional, Any
 import torch
 from torch import Tensor

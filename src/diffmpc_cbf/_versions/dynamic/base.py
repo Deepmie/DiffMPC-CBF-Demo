@@ -27,6 +27,8 @@ class Dynamic(ABC, nn.Module):
         if not torch.is_tensor(ipt):
             if len(ipt) == 2: ipt = torch.concat([ipt[0], ipt[1]]) # (ntau, )
             elif len(ipt) == 1: ipt = ipt[0]
+        else:
+            if ipt.ndimension() == 1: ipt = ipt.unsqueeze(-1)
 
         if order == 0:
             return self._state_transition_equation(ipt, params)

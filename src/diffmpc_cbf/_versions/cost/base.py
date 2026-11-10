@@ -28,6 +28,8 @@ class Cost(ABC, nn.Module):
         if not torch.is_tensor(ipt):
             if len(ipt) == 2: ipt = torch.concat([ipt[0], ipt[1]], dim=0) # (ntau, 1)
             elif len(ipt) == 1: ipt = ipt[0]
+        else:
+            if ipt.ndimension() == 1: ipt = ipt.unsqueeze(-1)
 
         if order == 0:
             return self._stage_cost_function(ipt, params)
@@ -44,6 +46,7 @@ class Cost(ABC, nn.Module):
             1: [nx, 1]
             2: [nx, nx]
         '''
+        if xt.ndimension() == 1: xt = xt.unsqueeze(-1)
         if order == 0:
             return self._terminal_cost_function(xt, params)
         elif order == 1 or order == 2:

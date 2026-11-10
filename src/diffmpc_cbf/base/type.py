@@ -7,3 +7,5 @@ class SQPStatus(Enum):
     LINE_SEARCH_FAILED: int = 2
     MAX_ITERATIONS: int = 3
     NEED_RESTORE: int = 4
+    NON_DESCENT: int = 5
+    FAILED: int = 6

@@ -40,6 +40,13 @@ class TvToCost(Cost):
         hid: Tensor = self.context_network(ctx) # (3, )
         return (5*hid[0]*(pt-pref)**2 + 5*hid[1]*(vt-vref)**2 + 0.2*(pt-pref)**4).sum(dim=0) # (1, )
 
+    def get_residual(self, ipt: Tensor, params: Dict[str, Tensor]):
+        if not torch.is_tensor(ipt):
+            if len(ipt) == 2: ipt = torch.concat([ipt[0], ipt[1]], dim=0) # (ntau, 1)
+            elif len(ipt) == 1: ipt = ipt[0]
+        else:
+            if ipt.ndimension() == 1: ipt = ipt.unsqueeze(-1)
+
 class TvToDynamic(Dynamic):
     def __init__(self, nx: int, nu: int, T: int, delta_t: float, eps: float=1e-1):
         super().__init__(nx, nu, T)
