@@ -1,23 +1,13 @@
 import torch
-import torch.nn as nn
-from enum import Enum
-from torch import Tensor
-from torch.func import jacrev, vmap
 
-def func(x: Tensor) -> Tensor:
-    # x: (3, 2)
-    return torch.concat([
-        x, # (3, 2)
-        x**2, # (3, 2)
-    ], dim=-1) # (3, 4)
 
-def test():
-    x = torch.rand([3, 2])
-    v = func(x)
-    J = jacrev(func)(x)
+def main():
+    a1 = torch.rand([10, 5])
+    a2 = torch.rand([10, 5, 6, 6])
 
-    print(v.shape)
-    print(J.shape)
+    r = a1.unsqueeze(-1).unsqueeze(-1) * a2
+    print(r.shape)
 
 if __name__ == '__main__':
-    test()
+    main()
+    

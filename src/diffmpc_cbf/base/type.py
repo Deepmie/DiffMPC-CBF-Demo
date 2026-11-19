@@ -1,4 +1,7 @@
 from enum import Enum, unique
+from typing import Dict, List
+import torch
+from torch import Tensor
 
 @unique
 class SQPStatus(Enum):
@@ -9,3 +12,5 @@ class SQPStatus(Enum):
     NEED_RESTORE: int = 4
     NON_DESCENT: int = 5
     FAILED: int = 6
+
+

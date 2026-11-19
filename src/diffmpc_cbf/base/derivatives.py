@@ -1,10 +1,10 @@
 from typing import Dict, Optional, Callable, Any
 import torch
 from torch import Tensor
-from torch.func import jacrev, vmap
+from torch.func import jacrev, hessian
 
 class DerivativesFunctionWrapper:
-    def __init__(self, func: Callable):
+    def __init__(self, func: Callable[[Tensor], Tensor]):
         '''
         Arguments:
             - func: must be a function satisfy:
@@ -30,18 +30,22 @@ class DerivativesFunctionWrapper:
             two:  [N, nf, nx, nx]
         '''
         with torch.enable_grad():
-            ipt = ipt.detach().requires_grad_()
-            value = self.__call__(ipt, params)
-            if not self._is_detect: self._detect_function(ipt, value)
+            # ipt = ipt.detach().requires_grad_()
+            # if not self._is_detect: self._detect_function(ipt, value)
 
             # directly return
-            if order == 0: return value
+            if order == 0:
+                value = self.__call__(ipt, params)
+                return value
 
-            grad = jacrev(self._func)(ipt)
-            if order == 1: return grad # (N, nf, N, nx)
+            elif order == 1:
+                grad: Tensor = jacrev(self._func)(ipt, params)
+                return grad.diagonal(dim1=0, dim2=2).permute(2, 0, 1)
 
-            hessian = jacrev(jacrev(self._func))(ipt)
-            if order == 2: return hessian # (N, nf, N, nx, Nx, nx)
+            elif order == 2:
+                hess: Tensor = hessian(self._func)(ipt, params)
+                return hess.diagonal(dim1=0, dim2=2).diagonal(dim1=2, dim2=4).permute(3, 0, 1, 2)
+    
 
     def _detect_function(self, ipt: Tensor, value: Tensor):
         nx = ipt.ndimension()

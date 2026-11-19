@@ -26,9 +26,9 @@ class Cost(ABC, nn.Module):
         self._cost_func = DerivativesFunctionWrapper(self._define_cost_function)
 
     def get_cost(self, tau: Tensor, params: Dict[str, Any], order: int=0):
-        if order == 1:
+        if order == 0:
             return self._cost_func(tau, params)
-        elif order > 1:
+        elif order > 0:
             return self._cost_func.derivatives(tau, params, order=order)
 
     def to(self, device: Optional[torch.device], dtype: Optional[torch.dtype]):
@@ -65,8 +65,8 @@ class Dynamic(ABC, nn.Module):
     
     def forward(self, tau: Union[Tensor, Tuple[Tensor]], params: Dict[str, Any], order: int=0) -> Tensor:
         if order == 0:
-            return self._dym_equ(tau)
-        elif order == 1 or order == 2:
+            return self._dym_equ(tau, params)
+        elif order > 0:
             return self._dym_equ.derivatives(tau, params, order=order)
     
     def to(self, device: Optional[torch.device], dtype: Optional[torch.dtype]):
@@ -106,7 +106,7 @@ class Barrier(ABC, nn.Module):
     def forward(self, x: Tensor, params: Dict[str, Any], order: int=0) -> Tensor:
         if order == 0:
             return self._bar_func(x, params)
-        elif order == 1 or order == 2:
+        elif order > 0:
             return self._bar_func.derivatives(x, params, order=order)
 
     def to(self, device: Optional[torch.device], dtype: Optional[torch.dtype]):

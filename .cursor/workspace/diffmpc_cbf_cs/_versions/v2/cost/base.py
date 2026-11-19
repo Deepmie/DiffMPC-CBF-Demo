@@ -1,0 +1,119 @@
+from abc import ABC, abstractmethod
+from typing import Dict, Tuple, Union, Optional, Callable, Any
+import torch
+from torch import Tensor
+import torch.nn as nn
+from ..base import DerivativesFunctionWrapper
+
+class Cost(ABC, nn.Module):
+    def __init__(self, nx: int, nu: int, T: int):
+        super().__init__()
+        self._nx = nx; self._nu = nu; self._T = T; self._ntau = self._nx + self._nu
+        self._stage_cost_function = DerivativesFunctionWrapper(self._define_stage_cost_function)
+        self._terminal_cost_function = DerivativesFunctionWrapper(self._define_terminal_cost_function)
+
+    def get_stage_cost(self, ipt: Union[Tensor, Tuple[Tensor]], params: Optional[Dict[str, Any]]=None, order: int=0) -> Union[Tensor, float]:
+        '''
+        Input:
+            ipt have three cases:
+            - (tau[T+1, ntau])
+            - (x[T+1, nx], u[T, nu])
+            - tau[T+1, ntau]
+        Output:
+            n-order stage cost function value in time t
+            0: [1]
+            1: [ntau, 1]
+            2: [ntau, ntau]
+        '''
+        if not torch.is_tensor(ipt):
+            if len(ipt) == 2: ipt = torch.concat([ipt[0], ipt[1]], dim=0) # (ntau, 1)
+            elif len(ipt) == 1: ipt = ipt[0]
+        else:
+            if ipt.ndimension() == 1: ipt = ipt.unsqueeze(-1)
+
+        if order == 0:
+            return self._stage_cost_function(ipt, params)
+        elif order == 1 or order == 2:
+            return self._stage_cost_function.derivatives(ipt, params, order=order)
+
+    def get_terminal_cost(self, xt: Tensor, params: Optional[Dict[str, Any]]=None, order: int=0) -> Union[Tensor, float]:
+        '''
+        Input:
+            xt (nx, ): terminal state
+        Output:
+            n-order terminal cost function value in time t
+            0: [1]
+            1: [nx, 1]
+            2: [nx, nx]
+        '''
+        if xt.ndimension() == 1: xt = xt.unsqueeze(-1)
+        if order == 0:
+            return self._terminal_cost_function(xt, params)
+        elif order == 1 or order == 2:
+            return self._terminal_cost_function.derivatives(xt, params, order=order)
+
+    def jacobian(self, ipt: Union[Tensor, Tuple[Tensor]], params: Optional[Dict[str, Any]]=None) -> Tensor:
+        '''
+        Input:
+            ipt have three cases:
+                - (tau[T+1, ntau])
+                - (x[T+1, nx], u[T, nu])
+                - tau[T+1, ntau]
+        '''
+        if not torch.is_tensor(ipt):
+            if len(ipt) == 2:
+                x, u = ipt
+                u_pad = torch.concat([u, torch.zeros(1, self._nu, dtype=u.dtype, device=u.device)], dim=0)
+                ipt = torch.concat([x, u_pad], dim=1)  # (T+1, ntau)
+            elif len(ipt) == 1:
+                ipt = ipt[0]
+
+        J: Tensor = torch.zeros([self._T+1, self._ntau])
+        for t in range(self._T):
+            J[t] = self.get_stage_cost(ipt[t].unsqueeze(-1), {**params, 't': t}, order=1).flatten()
+        J[self._T, :self._nx] = self.get_terminal_cost(
+            ipt[self._T, :self._nx].unsqueeze(-1), {**params, 't': self._T}, order=1
+        ).flatten()
+        return J # (T+1, ntau)
+
+    def hessian(self, ipt: Union[Tensor, Tuple[Tensor]], params: Optional[Dict[str, Any]]=None) -> Tensor:
+        '''
+        Input:
+            ipt have three cases:
+                - (tau[T+1, ntau])
+                - (x[T+1, nx], u[T, nu])
+                - tau[T+1, ntau]
+        '''
+        if not torch.is_tensor(ipt):
+            if len(ipt) == 2:
+                x, u = ipt
+                u_pad = torch.concat([u, torch.zeros(1, self._nu, dtype=u.dtype, device=u.device)], dim=0)
+                ipt = torch.concat([x, u_pad], dim=1)  # (T+1, ntau)
+            elif len(ipt) == 1:
+                ipt = ipt[0]
+
+        H: Tensor = torch.zeros([self._T+1, self._ntau, self._ntau])
+        for t in range(self._T):
+            H[t, :, :] = self.get_stage_cost(ipt[t].unsqueeze(-1), {**params, 't': t}, order=2)
+        H[self._T, :self._nx, :self._nx] = self.get_terminal_cost(
+            ipt[self._T, :self._nx].unsqueeze(-1), {**params, 't': self._T}, order=2
+        )
+        return H
+
+    @abstractmethod
+    def _define_stage_cost_function(self, ipt: Tensor, params: Optional[Dict[str, Any]]=None) -> Tensor:
+        '''
+        Input:
+            ipt: taut
+        Output:
+            l(taut), 1-dimension
+        '''
+
+    def _define_terminal_cost_function(self, xt: Tensor, params: Optional[Dict[str, Any]]=None) -> Tensor:
+        '''
+        Input:
+            ipt: xT
+        Output:
+            lT(xT), 1-dimension
+        '''
+        return torch.tensor([0]) # (1, )

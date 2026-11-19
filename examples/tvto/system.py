@@ -9,76 +9,121 @@ class TvToCost(Cost):
             self,
             nx: int,
             nu: int,
+            nb: int,
             T: int,
+            device: torch.device,
+            dtype: torch.dtype,
             kappa: float=0.5,
-            context_dim: Optional[int]=None
+            ctx_dim: Optional[int]=None,
         ):
-        super().__init__(nx, nu, T)
+        super().__init__(nx, nu, nb, T, device, dtype)
         self._kappa = kappa
-        if context_dim is None: context_dim = 3*2+2+1
-        self.context_network = ContextNetwork(context_dim)
+        self._slackdim = nb * T
+        if ctx_dim is None: ctx_dim = 2 + 2 + nb * 2 + 1
+        self.ctx_net = ContextNetwork(ctx_dim).to(device, dtype)
+        self._buffer_matrix()
 
-    def _define_stage_cost_function(self, ipt: Tensor, params: Dict[str, Tensor]) -> Tensor: # (6, 1)
-        _device = ipt.device
-        pt, vt, ut = ipt[0: 2], ipt[2: 4], ipt[4: 6]
-        pref = params.get('pref') # (2, 1)
-        vref = self._kappa * (pref-pt)
-        t: int = params.get('t'); t_ts: Tensor = params.get('t_ts')
-        _obs_info: Tuple[Tensor, Tensor] = params.get('obs_info'); _op, _or = _obs_info
-        ctx = torch.concat([pt-pref, vt, (pt-_op[:, t, :].unsqueeze(-1)).reshape(-1, 1), t_ts.reshape(1, 1)]).flatten()
-        hid: Tensor = self.context_network(ctx) # (3, )
-        return (0.5*hid[0]*(pt-pref)**2 + 0.5*hid[1]*(vt-vref)**2 + hid[2]*ut**2 + 0.02*(pt-pref)**4).sum(dim=0) # (1, )
-    
-    def _define_terminal_cost_function(self, xt: Tensor, params: Dict[str, Tensor]) -> Tensor:
-        _device = xt.device
-        pt, vt = xt[0: 2], xt[2: 4]
-        pref = params.get('pref') # (2, 1)
-        vref = self._kappa * (pref-pt)
-        t: int = params.get('t'); t_ts: Tensor = params.get('t_ts')
-        _obs_info: Tuple[Tensor, Tensor] = params.get('obs_info'); _op, _or = _obs_info
-        ctx = torch.concat([pt-pref, vt, (pt-_op[:, t, :].unsqueeze(-1)).reshape(-1, 1), t_ts.reshape(1, 1)]).flatten()
-        hid: Tensor = self.context_network(ctx) # (3, )
-        return (5*hid[0]*(pt-pref)**2 + 5*hid[1]*(vt-vref)**2 + 0.2*(pt-pref)**4).sum(dim=0) # (1, )
+    def _define_cost_function(self, tau: Tensor, params: Dict[str, Any]) -> Tensor:
+        '''
+        Arguments:
+            - tau[T+1, ntau]: combination of x and u
+            - params: some parameters of stage cost function
+        Returns:
+            - Cost[T+1, 1]: the cost sequence of T+1 element
+        '''
+        p, v, u = tau[:, 0: 2], tau[:, 2: 4], tau[:, 4: 6]
+        pref: Tensor = params.get('pref').flatten() # (2, )
+        vref = self._kappa * (pref - p) # (T+1, 2)
+        t: Tensor = params.get('t')
+        obs_info: Tuple[Tensor, Tensor] = params.get('obs_info')
+        po, ro = obs_info # (nb, T+1, 2), (nb, T+1)
 
-    def get_residual(self, ipt: Tensor, params: Dict[str, Tensor]):
-        if not torch.is_tensor(ipt):
-            if len(ipt) == 2: ipt = torch.concat([ipt[0], ipt[1]], dim=0) # (ntau, 1)
-            elif len(ipt) == 1: ipt = ipt[0]
-        else:
-            if ipt.ndimension() == 1: ipt = ipt.unsqueeze(-1)
+        ctx = torch.concat([
+            p - pref, # (T+1, 2)
+            v, # (T+1, 2)
+            *[poi for poi in (p - po)], # nb * (T+1, 2)
+            t.unsqueeze(-1), # (T+1, 1)
+        ], dim=1) # (T+1, ctxdim)
+        hid: Tensor = self.ctx_net(ctx) # (T+1, 3)
+        res = (0.5 * (self._w * hid[:, 0]).unsqueeze(-1) * (p-pref).square()).sum(dim=-1) + \
+               (0.5 * (self._w * hid[:, 1]).unsqueeze(-1) * (v-vref).square()).sum(dim=-1) + \
+               (t < self._T).to(u.dtype) * (hid[:, 2].unsqueeze(-1) * u.square()).sum(dim=-1) + \
+               (0.02 * self._w.unsqueeze(-1) * (p-pref)**4).sum(dim=-1)
+        return res.unsqueeze(-1)
+
+    def _buffer_matrix(self):
+        self._w: Tensor
+        self.register_buffer('_w', torch.tensor([1.0 if t < self._T else 10.0 for t in range(self._T+1)]))
+
 
 class TvToDynamic(Dynamic):
-    def __init__(self, nx: int, nu: int, T: int, delta_t: float, eps: float=1e-1):
-        super().__init__(nx, nu, T)
+    def __init__(
+            self,
+            nx: int,
+            nu: int,
+            T: int,
+            device: torch.device,
+            dtype: torch.dtype,
+            delta_t: float,
+            eps: float=1e-1
+        ):
+        super().__init__(nx, nu, T, device, dtype)
         self._delta_t = delta_t; self._eps = eps
-        self.residual_network = ResidualNetwork(nx, nu)
-    
-    def _define_state_transition_equation(self, ipt: Tensor, params=None): # (6, 1)
-        pt, vt, ut = ipt[0: 2], ipt[2: 4], ipt[4: 6]
-        _res: Tensor = self.residual_network(torch.concat([pt, vt, ut]).flatten()) # (nu, )
-        aeff = ut + self._eps*_res.unsqueeze(-1)
+        self.res_net = ResidualNetwork(nx, nu).to(device, dtype)
+
+    def _define_dynamic_equation(self, tau: Tensor, params: Dict[str, Any]) -> Tensor:
+        '''
+        Arguments:
+            - tau[T, ntau]: combination of x and u
+            - params: some parameters of dynamic equation
+        Returns:
+            - Next State[T, nx]: the next state sequence of T+1 element
+        '''
+        p, v, u = tau[:, 0: 2], tau[:, 2: 4], tau[:, 4: 6]
+        res: Tensor = self.res_net(tau) # (T, nu)
+        aeff = u + self._eps * res # (T, nu)
         return torch.concat([
-            pt + self._delta_t*vt + 1/2*self._delta_t**2*aeff,
-            vt + self._delta_t*aeff
-        ])
+            p + self._delta_t * v + 0.5 * self._delta_t**2 * aeff, # (T, 2)
+            v + self._delta_t * aeff, # (T, 2)
+        ], dim=-1) # (T, nx)
+
 
 class TvToBarrier(Barrier):
-    def __init__(self, nx: int, nu: int, T: int, nb: int):
-        super().__init__(nx, nu, T)
-        self.delta_network = DeltaNetwork(2+3)
-        self._nb = nb
+    def __init__(
+            self,
+            nx: int,
+            nu: int,
+            nb: int,
+            T: int,
+            device: torch.device,
+            dtype: torch.dtype,
+        ):
+        super().__init__(nx, nu, nb, T, device, dtype)
+        self.dlt_net = DeltaNetwork(2+3).to(device, dtype)
+    
+    def _define_barrier_function(self, x: Tensor, params: Dict[str, Any]) -> Tensor:
+        '''
+        Arguments:
+            - x[T, nx]: current state
+            - params: some parameters of barrier function
+        Returns:
+            - Next State[T, nb]: the next state sequence of T+1 element
+        '''
+        p = x[:, 0: 2]
+        t: Tensor = params.get('t')
+        obs_info: Tuple[Tensor, Tensor] = params.get('obs_info')
+        po, ro = obs_info # (nb, T+1, 2), (nb, T+1)
+        ra: Tensor = params.get('radius_agent') # (1, )
+        p_delta = p - po[:, t, :] # (nb, T, 2)
+        dist = p_delta.norm(p=2, dim=-1, keepdim=True) # (nb, T, 1)
+        t_batch = t.unsqueeze(0).expand(self._nb, -1).unsqueeze(-1) # (nb, T, 1)
+        ctx = torch.concat([
+            p_delta,
+            dist,
+            ro[:, t].unsqueeze(-1),
+            t_batch,
+        ], dim=-1) # (nb, T, 5)
+        hid: Tensor = self.dlt_net(ctx) # (nb, T, 1)
+        res = dist.squeeze(-1) - ((ro[:, t] + ra).unsqueeze(-1) + hid).norm(p=2, dim=-1) # (nb, T)
+        return res.permute(1, 0) # (T, nb)
 
-    def _define_barrier_function(self, xt: Tensor, params: Dict[str, Any]) -> Tensor:
-        pt = xt[0: 2]
-        t: int = params.get('t'); t_ts: Tensor = params.get('t_ts')
-        _obs_info: Tuple[Tensor, Tensor] = params.get('obs_info'); _op, _or = _obs_info
-        radius_agent: Tensor = params.get('radius_agent')
-
-        pt_delta = (pt - _op[:, t, :].unsqueeze(-1)) # (nb, 2, 1)
-        ort = _or[:, t] # (nb, 1)
-        res = torch.zeros([self._nb, 1], device=xt.device, dtype=xt.dtype)
-        for i in range(self._nb):
-            ctx  = torch.concat([pt_delta[i], torch.norm(pt_delta[i], p=2).reshape(1, 1), ort[i].reshape(1, 1), t_ts.reshape(1, 1)]).flatten()
-            hid = self.delta_network(ctx) # (1, )
-            res[i] = (pt_delta[i] ** 2).sum(dim=0) - (ort[i] + radius_agent + hid) ** 2
-        return res

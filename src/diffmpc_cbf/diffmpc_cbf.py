@@ -1,4 +1,4 @@
-from . import Cost, Dynamic, Barrier, MetricFunction
+from . import Cost, Dynamic, Barrier
 from .base import Tau, SQPStatus
 from .utils import *
 import torch
@@ -26,11 +26,16 @@ class DiffMPCBF(nn.Module):
         slack_weight: List[float] = [1e2, 1e3],
         min_iter_nums: int = 2,
         max_iter_nums: int = 30,
-        qp_config: List[Tuple] = [(1e-5, 20), (1e-7, 30), (1e-8, 50)],
+        # qp_config: List[Tuple] = [(1e-5, 20), (1e-7, 30), (1e-8, 50)],
+        qp_config: List[Tuple] = [(1e-5, 25)],
+        max_reg_nums: int = 5,
+        reg_init: float = 1e-6,
+        reg_factor: float = 10.0,
+        reg_max: float = 1e6,
         ls_alpha_init: float =1.0,
         ls_max_num: int = 10,
         ls_decay_rate: float = 0.5,
-        use_gauss_newton: bool = True,
+        two_order_mode: str = 'nodv', # 'full', 'nodv'
         device: torch.device = torch.device('cpu'),
         dtype: torch.dtype = torch.float32,
     ):
@@ -50,10 +55,14 @@ class DiffMPCBF(nn.Module):
         self._ls_alpha_init = ls_alpha_init
         self._ls_max_num = ls_max_num
         self._ls_decay_rate = ls_decay_rate
-        self._use_gauss_newton = use_gauss_newton
+        self._two_order_mode = two_order_mode
         self._device = device
         self._dtype = dtype
         self._qp_config = [{'eps': qc[0], 'maxIter': qc[1]} for qc in qp_config]
+        self._max_reg_nums = max_reg_nums
+        self._reg_init = reg_init
+        self._reg_factor = reg_factor
+        self._reg_max = reg_max
 
         self._ntau = nx + nu
         self._ng = 2 * (nb + nu)
@@ -153,31 +162,46 @@ class DiffMPCBF(nn.Module):
         self._update_one_order_term(zeta, params)
         self._update_two_order_term(zeta, self._dveq, self._dvneq, params)
         
+        _Qv = self._Qv.clone()
+        _pv = self._pv.clone()
+        _Gv = self._Gv.clone()
+        _qv = self._qv.clone()
+        _Av = self._Av.clone()
+        _bv = self._bv.clone()
+        # reg Q
+        # self._regularize_hessian(_Qv)
         for qc in self._qp_config:
             eps, maxIter = qc.get('eps'), qc.get('maxIter')
-            zeta_delta, dveq_qp, dvneq_qp = QPFunction(eps=eps, verbose=0, maxIter=maxIter)(self._Qv.clone(), self._pv.clone(), self._Gv.clone(), self._qv.clone(), self._Av.clone(), self._bv.clone())
+            zeta_delta, dveq_qp, dvneq_qp = QPFunction(eps=eps, verbose=0, notImprovedLim=20, maxIter=maxIter)(_Qv, _pv, _Gv, _qv, _Av, _bv)
             zeta_delta, dveq_qp, dvneq_qp = self._process_qp_result(zeta_delta, dveq_qp, dvneq_qp)
-            slack_qp = self._qv - self._Gv @ zeta_delta # (T*ng, )
-            r_eq = (self._Av @ zeta_delta - self._bv).norm(float('inf'))
-            r_neq = (self._Gv @ zeta_delta - self._qv).clamp_min(0.0).norm(float('inf'))
-            stat = (self._Qv @ zeta_delta + self._pv + self._Av.T @ dveq_qp + self._Gv.T @ dvneq_qp).norm(float('inf'))
+
+            # check
+            slack_qp = _qv - _Gv @ zeta_delta # (T*ng, )
+            r_eq = (_Av @ zeta_delta - _bv).norm(float('inf'))
+            r_neq = (_Gv @ zeta_delta - _qv).clamp_min(0.0).norm(float('inf'))
+            stat = (_Qv @ zeta_delta + _pv + _Av.T @ dveq_qp + _Gv.T @ dvneq_qp).norm(float('inf'))
             r_dv = (-dvneq_qp).clamp_min(0.0).norm(float('inf'))
             r_cp = (dvneq_qp * slack_qp).norm(float('inf'))
-            
-            qp_ok = torch.isfinite(zeta_delta).all() & \
-            torch.isfinite(dveq_qp).all() & \
-            torch.isfinite(dvneq_qp).all() & \
-            (r_eq < 1e-4) & \
-            (r_neq < 1e-4) & \
-            (stat < 1e-4) & \
-            (r_dv < 1e-4) & \
-            (r_cp < 1e-4)
-
+            qp_ok = (torch.isfinite(zeta_delta).all()) & \
+                    (torch.isfinite(dveq_qp).all()) & \
+                    (torch.isfinite(dvneq_qp).all()) & \
+                    (r_eq < 1e-4) & \
+                    (r_neq < 1e-4) & \
+                    (stat < 1e-4) & \
+                    (r_dv < 1e-4) & \
+                    (r_cp < 1e-4)
             if qp_ok:
                 break
-        
+
         if not qp_ok:
-            raise RuntimeError('QP solve not true.')
+            raise RuntimeError((
+                'QP solve failed. Var Tables:\n'
+                f'r_eq: {r_eq:.3e}\n'
+                f'r_neq: {r_neq:.3e}\n'
+                f'stat: {stat:.3e}\n'
+                f'r_dv: {r_dv:.3e}\n'
+                f'r_cp: {r_cp:.3e}\n'
+            ))
         return zeta_delta, dveq_qp, dvneq_qp
 
     def _check_primal_feasibility(self) -> Tensor:
@@ -212,22 +236,19 @@ class DiffMPCBF(nn.Module):
         elif mode == 'temp':
             self._update_zero_order_term(zeta, x0, params, 'temp')
             _bv, _qv = self._btmpv, self._qtmpv
+        else:
+            raise NameError('mode must include two options: [main, temp.]')
         
         metric: float = 0.0
         ctpm = params.get('cost')
+        rho1, rho2 = self._slack_weight
+        weq, wneq = self._metric_weight
 
         # cost
-        for t in range(self._T+1):
-            _taut = zeta[t, :self._ntau]
-            if t < self._T:
-                metric += self._cost.get_stage_cost(_taut, self._tcon(ctpm, t))
-            elif t == self._T:
-                metric += self._cost.get_terminal_cost(_taut, self._tcon(ctpm, t))
-        rho1, rho2 = self._slack_weight
+        metric += self._cost.get_cost(zeta[:, :self._ntau], self._tcon(ctpm, 'full')).sum(0) # (1, )
         slack = zeta[:, self._ntau:]
         metric += rho1 * slack.sum() + rho2/2 * slack.square().sum()
 
-        weq, wneq = self._metric_weight
         # equation
         metric += (1.1 * dveq.norm(float('inf'))).clamp_min(weq) * (-_bv).norm(1)
         metric += (1.1 * dvneq.norm(float('inf'))).clamp_min(wneq) * (-_qv).clamp_min(0.0).norm(1)
@@ -250,10 +271,10 @@ class DiffMPCBF(nn.Module):
         self._zeta[:self._T-1, self._nx: self._ntau] = self._zeta[1:self._T, self._nx: self._ntau].clamp(self._umin, self._umax)
         # rollout
         for t in range(self._T):
-            self._zeta[t+1, :self._nx] = self._dynamic.forward(self._zeta[t, :self._ntau].unsqueeze(-1), self._tcon(dypm, t)).flatten()
-            g_cbf = self._barrier.forward(self._zeta[t+1, :self._nx], self._tcon(brpm, t+1)).flatten() - \
-            (1-gamma) * self._barrier.forward(self._zeta[t, :self._nx], self._tcon(brpm, t)).flatten()
-            self._zeta[t, self._ntau:] = (-g_cbf).clamp_min(0.0) + 1e-3
+            self._zeta[t+1, :self._nx].copy_(self._dynamic.forward(self._zeta[t, :self._ntau].unsqueeze(0), self._tcon(dypm, t)).squeeze(0))
+            g_cbf = self._barrier.forward(self._zeta[t+1, :self._nx].unsqueeze(0), self._tcon(brpm, t+1)) - \
+            (1-gamma) * self._barrier.forward(self._zeta[t, :self._nx].unsqueeze(0), self._tcon(brpm, t))
+            self._zeta[t, self._ntau:] = (-g_cbf.squeeze(0)).clamp_min(0.0) + 1e-3
         
         if not self._first_forward:
             self._dveq.zero_()
@@ -271,15 +292,16 @@ class DiffMPCBF(nn.Module):
         elif mode == 'temp':
             _b, _q = self._btmp, self._qtmp
 
-        u = _zeta[:self._T, self._nx: self._ntau] # (T, nu)
-        _slack = _zeta[:self._T, self._ntau:] # (T, nb)
+        u = _zeta[self._tdx, self._nx: self._ntau] # (T, nu)
+        _slack = _zeta[self._tdx, self._ntau:] # (T, nb)
 
         # get b
         _b[0] = _zeta[0, :self._nx] - x0.flatten()
-        _b[1:] = _zeta[1:, :self._nx] - self._dynamic.forward(_zeta[1:, :self._ntau], dypm)
+        _b[self._tdx+1] = _zeta[self._tdx+1, :self._nx] - self._dynamic.forward(_zeta[self._tdx, :self._ntau], self._tcon(dypm))
         
         # get q
-        _q[:, :self._nb] = self._barrier.forward(_zeta[1:, :self._nx], brpm) + _slack # (T, nb)
+        _q[:, :self._nb] = self._barrier.forward(_zeta[self._tdx+1, :self._nx], self._tcon(brpm, 'next')) \
+                           - (1-gamma) * self._barrier.forward(_zeta[self._tdx, :self._nx], self._tcon(brpm)) + _slack # (T, nb)
         _q[:, self._nb: self._nd] = torch.concat([
             u - self._umin,
             self._umax - u
@@ -294,6 +316,8 @@ class DiffMPCBF(nn.Module):
         dypm: Dict = params.get('dynamic')
         brpm: Dict = params.get('barrier')
         gamma: float = brpm.get('gamma')
+        rho1, rho2 = self._slack_weight
+
         if mode == 'main':
             _p, _A, _G = self._p, self._A, self._G
             _first_one = self._first_one
@@ -301,31 +325,22 @@ class DiffMPCBF(nn.Module):
             _p, _A, _G = self._ptmp, self._Atmp, self._Gtmp
             _first_one = self._first_one_tmp
 
-        _p[:, :self._ntau] = self._cost.get_cost(_zeta[:, :self._ntau], ctpm, order=1)
-        _A[1:, :, :self._T, :self._ntau] = self._dynamic.forward(_zeta[:self._T, :self._ntau], dypm, order=1)
-        _G[:self._T, :self._nb, self._T, :self._ntau] = (1-gamma) * self._barrier.forward(_zeta[:self._T, :self._nx], brpm, order=1)
+        _p[:, :self._ntau] = self._cost.get_cost(_zeta[:, :self._ntau], self._tcon(ctpm, 'full'), order=1).squeeze(1)
+        _p[self._T, self._nx: self._ntau] = 0.0
+        _p[self._tdx, self._ntau:] = rho1 * self._csO + rho2 * _zeta[self._tdx, self._ntau:]
+
+        # equation jacobian
+        _A[self._tdx+1, :, self._tdx, :self._ntau] = self._dynamic.forward(_zeta[self._tdx, :self._ntau], self._tcon(dypm), order=1)
+        _A[self._tf, :, self._tf, :self._ntau] = -self._cx.T
         
-        for t in range(self._T+1):
-            _A[t, :, t, :self._ntau] = -self._cx.T
-        
-        for t in range(self._T+1):
-            _taut, _xt = _zeta[t, :self._ntau], _zeta[t, :self._nx]
-            if t < self._T:
-                _p[t, :self._ntau] = self._cost.get_stage_cost(_taut, self._tcon(ctpm, t), order=1).flatten()
-                _A[t+1, :, t, :self._ntau] = self._dynamic.forward(_taut, self._tcon(dypm, t), order=1)
-                # inequation of CBF Jacobian
-                _G[t, :self._nb, t, :self._ntau] = (1-gamma)*self._barrier.forward(_xt, self._tcon(brpm, t), order=1) @ self._cx.T
-                _G[t, :self._nb, t+1, :self._ntau] = -self._barrier.forward(_zeta[t+1, :self._nx], self._tcon(brpm, t+1), order=1) @ self._cx.T
-                # inequation of boundary Jacobian
-                _G[t, self._nb: self._nd, t, :self._ntau] = torch.concat([-self._cu.T, self._cu.T], dim=0)
-            if t == self._T:
-                _p[t, :self._nx] = self._cost.get_terminal_cost(_xt, self._tcon(ctpm, t), order=1).flatten()
-            _A[t, :, t, :self._ntau] = -self._cx.T
-        rho1, rho2 = self._slack_weight
-        _p[:self._T, self._ntau:].copy_(rho1 * self._csO + rho2 * _zeta[:self._T, self._ntau:])
+        # inequation jacobian
+        _G[self._tdx, :self._nb, self._tdx, :self._ntau] = (1-gamma) * self._barrier.forward(_zeta[self._tdx, :self._nx], self._tcon(brpm), order=1) @ self._cx.T
+        _G[self._tdx, :self._nb, self._tdx+1, :self._ntau] = -self._barrier.forward(_zeta[self._tdx+1, :self._nx], self._tcon(brpm, 'next'), order=1) @ self._cx.T
+        _G[self._tdx, self._nb: self._nd, self._tdx, :self._ntau] = torch.concat([-self._cu.T, self._cu.T], dim=0)
+
         if _first_one:
-            _G[:, :self._nb, :self._T, self._ntau:].copy_(-self._csI)
-            _G[:, self._nd:, :self._T, self._ntau:].copy_(-self._csI)
+            _G[:, :self._nb, :self._T, self._ntau:] = -self._csI
+            _G[:, self._nd:, :self._T, self._ntau:] = -self._csI
             if mode == 'main':
                 self._first_one = False
             elif mode == 'temp':
@@ -339,38 +354,59 @@ class DiffMPCBF(nn.Module):
         dypm: Dict = params.get('dynamic')
         brpm: Dict = params.get('barrier')
         gamma: float = brpm.get('gamma')
+        rho2 = self._slack_weight[1]
+
         if mode == 'main':
             _Q = self._Q
             _first_two = self._first_two
         elif mode == 'temp':
             _Q = self._Qtmp
             _first_two = self._first_two_tmp
-        
-        for t in range(self._T+1):
-            _taut, _xt = _zeta[t, :self._ntau], _zeta[t, :self._nx]
-            if t < self._T:
-                _Q[t, :self._ntau, t, :self._ntau] = self._cost.get_stage_cost(_taut, self._tcon(ctpm, t), order=2)
-                if not self._use_gauss_newton:
-                    _Q[t, :self._ntau, t, :self._ntau] += (dveq[t+1].reshape(-1, 1, 1) * self._dynamic.forward(_taut, self._tcon(dypm, t), order=2)).sum(dim=0)
-            
-            if t == self._T:
-                _Q[t, :self._nx, t, :self._nx] = self._cost.get_terminal_cost(_xt, self._tcon(ctpm, t), order=2)
-                _Q[t, self._nx: self._ntau, t, self._nx: self._ntau] = 1e-3 * self._cuI
-            
-            if not self._use_gauss_newton:
-                if t == 0:
-                    _dvnt = 0.0
-                else:
-                    _dvnt = -dvneq[t-1, :self._nb]
-                _Q[t, :self._ntau, t, :self._ntau] += ((_dvnt + (1-gamma) * dvneq[t, :self._nb]).reshape(-1, 1, 1) * self._cx.unsqueeze(0) @ self._barrier.forward(_xt, self._tcon(brpm, t), order=2) @ self._cx.T.unsqueeze(0)).sum(dim=0)
+
+        _Q[self._tf, :self._ntau, self._tf, :self._ntau] = self._cost.get_cost(_zeta[self._tf, :self._ntau], self._tcon(ctpm, 'full'), order=2).squeeze(1)
+
+        if self._two_order_mode == 'full':
+            # equation dual varible
+            _Q[self._tdx, :self._ntau, self._tdx, :self._ntau] += \
+            (dveq[self._tdx+1].unsqueeze(-1).unsqueeze(-1) * self._dynamic.forward(_zeta[self._tdx, :self._ntau], self._tcon(dypm), order=2)).sum(dim=1)
+            # inequation dual varible
+            coeff = torch.concat([
+                (1-gamma) * dvneq[0, :self._nb].unsqueeze(0), # (1, nb)
+                -dvneq[:self._T-1, :self._nb] + (1-gamma) * dvneq[1:self._T, :self._nb], # (T-1, nb)
+                -dvneq[self._T-1, :self._nb].unsqueeze(0), # (1, nb)
+            ], dim=0).unsqueeze(-1).unsqueeze(-1) # (T+1, nb, 1, 1)
+            _Q[self._tf, :self._ntau, self._tf, :self._ntau] += \
+            (coeff * (self._cx @ self._barrier.forward(_zeta[:, :self._nx], self._tcon(brpm, 'full'), order=2) @ self._cx.T)).sum(dim=1)
+
+        _Q[self._T, self._nx: self._ntau, self._T, :] = 0.0
+        _Q[self._T, :, self._T, self._nx: self._ntau] = 0.0
+        _Q[self._T, self._nx: self._ntau, self._T, self._nx: self._ntau] = 1e-3 * self._cuI
+
         # only once
         if _first_two:
-            rho2 = self._slack_weight[1]
             _Q[:self._T, self._ntau:, :self._T, self._ntau:].copy_(rho2 * self._csI)
             if mode == 'main':
                 self._first_two = False
             elif mode == 'temp':
                 self._first_two_tmp = False
+
+    def _regularize_hessian(self, H: Tensor) -> float:
+        _H = H.clone()
+        _H = 0.5 * (_H + _H.T)
+        if not torch.isfinite(_H).all():
+            raise RuntimeError('Non-finite Hessian detected.')
+
+        reg: float = 0.0
+        for _ in range(self._max_reg_nums):
+            Q = _H + reg * self._cQI[:self._vardim, :self._vardim]
+            _, info = torch.linalg.cholesky_ex(Q, check_errors=False)
+            if (info == 0).all():
+                break
+            reg = self._reg_init if reg == 0.0 else reg * self._reg_factor
+            if reg > self._reg_max:
+                raise RuntimeError(f'No right reg find. now reg_max={self._reg_max:e}')
+        H.copy_(Q)
+        return reg
 
     def _get2Dview(self):
         _vdim = (self._T+1) * self._nv
@@ -414,10 +450,27 @@ class DiffMPCBF(nn.Module):
     def _process_qp_result(self, *vs: Tensor) -> List[Tensor]:
         return [v.flatten() for v in vs]
 
-    def _tcon(self, params: Dict[str, Any], t: int) -> Dict[str, Any]:
-        return {**params, **{'t': t, 't_ts': self._ts[t]}}
+    def _tcon(self, params: Dict[str, Any], t: Optional[Union[int, str]]=None) -> Dict[str, Any]:
+        '''
+        t options: 'curr', 'next', 'full', any int and None
+        '''
+        if t is None or t == 'curr':
+            _t = self._tdx
+        elif t == 'next':
+            _t = self._tdx + 1
+        elif t == 'full':
+            _t = self._tf
+        elif isinstance(t, int):
+            _t = t * self._t
+        else:
+            raise ValueError('param of t not in option list.')
+        return {**params, **{'t': _t}}
+
+    def tcon(self, params: Dict[str, Any], t: Optional[Union[int, str]]=None) -> Dict[str, Any]:
+        return self._tcon(params, t)
 
     def _buffer_matrix(self, umin: Tensor, umax: Tensor):
+        _vdim = (self._T+1) * self._nv
         self._zeta: Tensor
         self._dveq: Tensor
         self._dvneq: Tensor
@@ -434,7 +487,10 @@ class DiffMPCBF(nn.Module):
         self._csO: Tensor
         self._csI: Tensor
         self._cuI: Tensor
-        self._ts: Tensor
+        self._cQI: Tensor
+        self._tdx: Tensor
+        self._tf: Tensor
+        self._t: Tensor
 
         # register
         self.register_buffer('_zeta', self._zeros(self._T+1, self._nv), persistent=False)
@@ -459,7 +515,10 @@ class DiffMPCBF(nn.Module):
         self.register_buffer('_csO', self._ones(self._T, self._nb), persistent=False)
         self.register_buffer('_csI', self._eye(self._slackdim).view(self._T, self._nb, self._T, self._nb), persistent=False)
         self.register_buffer('_cuI', self._eye(self._nu), persistent=False)
-        self.register_buffer('_ts', self._arange(0, self._T+1), persistent=False)
+        self.register_buffer('_cQI', self._eye(_vdim), persistent=False)
+        self.register_buffer('_tdx', self._arange(0, self._T), persistent=False)
+        self.register_buffer('_tf', self._arange(0, self._T+1), persistent=False)
+        self.register_buffer('_t', torch.ones(1, device=self._device, dtype=torch.int), persistent=False)
 
         # tmp matrix
         self._Qtmp: Tensor
@@ -489,4 +548,4 @@ class DiffMPCBF(nn.Module):
     def _eye(self, n: int, m: Optional[int]=None):
         if m is not None: return torch.eye(n, m, device=self._device, dtype=self._dtype)
         else: return torch.eye(n, device=self._device, dtype=self._dtype)
-    def _arange(self, start: int, end: int): return torch.arange(start, end, device=self._device, dtype=self._dtype)
+    def _arange(self, start: int, end: int): return torch.arange(start, end, device=self._device, dtype=torch.int)

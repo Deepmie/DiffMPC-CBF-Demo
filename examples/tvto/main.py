@@ -19,12 +19,7 @@ def get_timenow() -> str:
 def train(
         env: Env,
         mpc: DiffMPCBF,
-        barrier: TvToBarrier,
         pref: Tensor,
-        nx: int,
-        nu: int,
-        nb: int,
-        T: int,
         gamma: float,
         N: int,
         num_epoch: int,
@@ -33,84 +28,106 @@ def train(
         device: torch.device,
         dtype: torch.dtype,
     ):
-    ntau = nx + nu
-    nv = ntau + nb
+    # initial set
+    nx = mpc._nx
+    nu = mpc._nu
+    nb = mpc._nb
+    T  = mpc._T
+    ntau = mpc._ntau
+    nv = mpc._nv
+    vardim = mpc._vardim
+    _zeta = mpc._zeros((T+1), nv)
+    _zetav = _zeta.view((T+1) * nv)
+    _cw = mpc._ones(T+1); _cw[-1] = 10.0; _cw.requires_grad_(False)
+    cost = mpc._cost
+    dynamic = mpc._dynamic
+    barrier = mpc._barrier
+
+    # set log
     with open('./log/train.txt', mode='w', encoding='utf-8') as writer:
         writer.write(f'[{get_timenow()}] Start to record\n')
 
-    evaluate_num: int = 0
     w1, w2, w3 = loss_weight
-    loss_list: List[float] = []
     # set optim
-    optimizer = torch.optim.Adam(mpc.parameters(), lr=lr)
-
-    # set loss
+    opt_policy = torch.optim.Adam(list(cost.parameters()) + list(barrier.parameters()), lr=lr)
+    opt_dynamic = torch.optim.Adam(dynamic.parameters(), lr=lr)
+    loss_list: List[float] = []
+    evaluate_num: int = 0
     start = time.time()
+
+    # start to train
     for epoch in range(num_epoch):
         env.reset()
         mpc.reset()
 
-        xs_list: List[Tensor] = []
-        xs_real_list: List[Tensor] = []
-        us_list: List[Tensor] = []
-        bs_list: List[Tensor] = []
+        xs: List[Tensor] = []
+        us: List[Tensor] = []
+        bs: List[Tensor] = []
+        xcurrs: List[Tensor] = []
+        xnexts: List[Tensor] = []
         # one episode
-        for k in range(N-1):
+        for k in range(N):
             _obs_info = env.get_obs_info(T+1)
             _obs_info_ts, _radius_agent_ts, _gamma_ts = convert_any_to_tensor_batch([_obs_info, env.radius_agent, gamma], device, dtype)
             params = {
                 'cost': {'pref': pref, 'obs_info': _obs_info_ts},
                 'barrier': {'obs_info': _obs_info_ts, 'radius_agent': _radius_agent_ts, 'gamma': _gamma_ts},
             }
-            x = torch.from_numpy(env.state.copy()).requires_grad_(True).to(device=device, dtype=dtype)
-            zeta, sqp_status = mpc.forward(x, params)
+            x_curr = torch.as_tensor(env.state.reshape(-1).copy(), dtype=dtype, device=device) # (nx, )
+            zeta, sqp_status = mpc.forward(x_curr, params)
             if sqp_status != SQPStatus.CONVERGED: raise RuntimeError(f'SQP solve Failed!')
             
             # interact with env
-            u_env = zeta[nx: ntau].cpu().detach().numpy().reshape(-1, 1)
-            x_env, done = env.step(u_env)
+            u_env = zeta[nx: ntau].detach()
+            x_env, done = env.step(u_env.cpu().numpy().reshape(-1, 1))
+            x_next = torch.as_tensor(x_env.reshape(-1), dtype=dtype, device=device) # (nx, )
             
-            # append data
-            xs_list.append(zeta[nv: nv+nx])
-            us_list.append(zeta[nx: ntau])
-            bs_list.append(barrier.forward(zeta[nv: nv+nx], tcon(params['barrier'], 1, device, dtype)).flatten())
-            xs_real_list.append(convert_tensor_iteration(x_env.copy(), device, dtype).flatten())
+            # collect training data
+            _zetav[:vardim] = zeta
+            xs.append(_zeta[:, :nx].clone()) # (T+1, nx)
+            us.append(u_env) # (nu, )
+            bs.append(barrier.forward(zeta[nv: nv+nx].unsqueeze(0), mpc.tcon(params['barrier'], 1)).flatten()) # (nb, )
+            xcurrs.append(x_curr) # (nx, )
+            xnexts.append(x_next)
             if done: break
 
-        xs = torch.stack(xs_list)
-        us = torch.stack(us_list)
-        bs = torch.stack(bs_list)
-        xs_real = torch.stack(xs_real_list)
+        _xs = torch.stack(xs) # (N, T+1, nx)
+        _us = torch.stack(us) # (N, nu)
+        _bs = torch.stack(bs) # (N, nb)
+        _xcurrs = torch.stack(xcurrs) # (N, nx)
+        _xnexts = torch.stack(xnexts) # (N, nx)
+        _taus = torch.concat([_xcurrs, _us], dim=-1) # (N, ntau)
 
-        loss_obj = (xs[:, 0:2] - pref.reshape(1, -1)).square().mean()
-        loss_control = us.square().mean()
-        loss_safe = (torch.nn.functional.relu(-bs)).square().mean()
-        loss_dynamic = (xs-xs_real).square().mean()
+        # step1: policy training
+        loss_obj = (_cw.view(1, T+1, 1) * (_xs[..., 0:2].reshape(N*(T+1), 2) - pref.reshape(-1)).square().reshape(N, T+1, 2)).mean()
+        # loss_control = us.square().mean()
+        loss_safe = (torch.nn.functional.relu(-_bs)).square().mean()
+        loss_policy: Tensor = w1*loss_obj + w2*loss_safe
 
-        loss = w1*(loss_obj + loss_control) + w2*loss_safe + w3*loss_dynamic
-        loss_list.append(loss.item())
+        opt_policy.zero_grad()
+        loss_policy.backward()
+        opt_policy.step()
 
-        # update parameters
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        # step2: dynamic training
+        xpreds = dynamic.forward(_taus, dict()) # (N, nx)
+        loss_dynamic: Tensor = (xpreds - _xnexts).square().mean()
+
+        opt_dynamic.zero_grad()
+        loss_dynamic.backward()
+        opt_dynamic.step()
+
 
         # record loss
         with open('./log/train.txt', mode='a', encoding='utf-8') as writer:
-            writer.write(f'[{get_timenow()}] Epoch: {epoch}, loss: {loss:4f}, {loss_obj:4f} | {loss_control:4f} | {loss_safe:4f} | {loss_dynamic:4f}\n')
+            writer.write(f'[{get_timenow()}] Epoch: {epoch}, policy: {loss_policy:4f} (obj: {loss_obj:4f}, safe: {loss_safe:4f}), dynamic: {loss_dynamic:4f}\n')
 
         # evaluate
         if (epoch+1) % 10 == 0:
-            loss_eval, loss_obj_eval, loss_control_eval, loss_safe_eval, loss_dynamic_eval = \
+            loss_policy_eval, loss_dynamic_eval = \
             eval(
                 env,
                 mpc,
-                barrier,
                 pref,
-                nx,
-                nu,
-                nb,
-                T,
                 gamma,
                 N,
                 loss_weight,
@@ -119,11 +136,10 @@ def train(
             )
             # record loss
             with open('./log/eval.txt', mode='a', encoding='utf-8') as writer:
-                writer.write(f'[{get_timenow()}] Num: {evaluate_num}, loss: {loss_eval:4f}, {loss_obj_eval:4f} | {loss_control_eval:4f} | {loss_safe_eval:4f} | {loss_dynamic_eval:4f}\n')
+                writer.write(f'[{get_timenow()}] Num: {evaluate_num}, policy: {loss_policy_eval:4f}, dynamic: {loss_dynamic_eval:4f}\n')
 
             env.show(f'./imgs/tvto_{evaluate_num}.gif')
             evaluate_num += 1
-
 
     end = time.time()
     with open('./log/train.txt', mode='a', encoding='utf-8') as writer:
@@ -134,63 +150,81 @@ def train(
 def eval(
         env: Env,
         mpc: DiffMPCBF,
-        barrier: TvToBarrier,
         pref: Tensor,
-        nx: int,
-        nu: int,
-        nb: int,
-        T: int,
         gamma: float,
         N: int,
         loss_weight: List[float],
         device: torch.device,
         dtype: torch.dtype,
     ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-    ntau = nx + nu
-    nv = ntau + nb
+    # initial set
+    nx = mpc._nx
+    nu = mpc._nu
+    nb = mpc._nb
+    T  = mpc._T
+    ntau = mpc._ntau
+    nv = mpc._nv
+    vardim = mpc._vardim
+    _zeta = mpc._zeros((T+1), nv)
+    _zetav = _zeta.view((T+1) * nv)
+    _cw = mpc._ones(T+1); _cw[-1] = 10.0
+    cost = mpc._cost
+    dynamic = mpc._dynamic
+    barrier = mpc._barrier
+    
     w1, w2, w3 = loss_weight
+    # start to evaluate
     env.reset()
     mpc.reset()
 
-    xs_list: List[Tensor] = []
-    xs_real_list: List[Tensor] = []
-    us_list: List[Tensor] = []
-    bs_list: List[Tensor] = []
+    xs: List[Tensor] = []
+    us: List[Tensor] = []
+    bs: List[Tensor] = []
+    xcurrs: List[Tensor] = []
+    xnexts: List[Tensor] = []
     # one episode
-    for k in range(N-1):
+    for k in range(N):
         _obs_info = env.get_obs_info(T+1)
         _obs_info_ts, _radius_agent_ts, _gamma_ts = convert_any_to_tensor_batch([_obs_info, env.radius_agent, gamma], device, dtype)
         params = {
             'cost': {'pref': pref, 'obs_info': _obs_info_ts},
             'barrier': {'obs_info': _obs_info_ts, 'radius_agent': _radius_agent_ts, 'gamma': _gamma_ts},
         }
-        x = torch.from_numpy(env.state.copy()).requires_grad_(True).to(device=device, dtype=dtype)
-        zeta, sqp_status = mpc.forward(x, params)
+        x_curr = torch.as_tensor(env.state.copy(), dtype=dtype, device=device) # (nx, )
+        zeta, sqp_status = mpc.forward(x_curr, params)
         if sqp_status != SQPStatus.CONVERGED: raise RuntimeError(f'SQP solve Failed!')
-
+        
         # interact with env
         u_env = zeta[nx: ntau].cpu().detach().numpy().reshape(-1, 1)
         x_env, done = env.step(u_env)
+        x_next = torch.as_tensor(x_env, dtype=dtype, device=device) # (nx, )
         
-        # append data
-        xs_list.append(zeta[nv: nv+nx])
-        us_list.append(zeta[nx: ntau])
-        bs_list.append(barrier.forward(zeta[nv: nv+nx], tcon(params['barrier'], 1, device, dtype)).flatten())
-        xs_real_list.append(convert_tensor_iteration(x_env.copy(), device, dtype).flatten())
+        # collect training data
+        _zetav[:vardim] = zeta
+        xs.append(_zeta[:, :nx].clone()) # (T+1, nx)
+        us.append(zeta[nx: ntau]) # (nu, )
+        bs.append(barrier.forward(zeta[nv: nv+nx].unsqueeze(0), mpc.tcon(params['barrier'], 1)).flatten()) # (nb, )
+        xcurrs.append(x_curr) # (nx, )
+        xnexts.append(x_next)
         if done: break
-    
-    xs = torch.stack(xs_list)
-    us = torch.stack(us_list)
-    bs = torch.stack(bs_list)
-    xs_real = torch.stack(xs_real_list)
 
-    loss_obj = (xs[:, 0:2] - pref.reshape(1, -1)).square().mean()
-    loss_control = us.square().mean()
-    loss_safe = (torch.nn.functional.relu(-bs)).square().mean()
-    loss_dynamic = (xs-xs_real).square().mean()
+    _xs: Tensor = torch.stack(xs) # (N, T+1, nx)
+    _us: Tensor = torch.stack(us) # (N, nu)
+    _bs: Tensor = torch.stack(bs) # (N, nb)
+    _xcurrs: Tensor = torch.stack(xcurrs) # (N, nx)
+    _xnexts: Tensor = torch.stack(xnexts) # (N, nx)
+    _taus: Tensor = torch.concat([xcurrs, us], dim=-1) # (N, ntau)
 
-    loss = w1*(loss_obj + loss_control) + w2*loss_safe + w3*loss_dynamic
-    return loss, loss_obj, loss_control, loss_safe, loss_dynamic
+    # step1: policy training
+    loss_obj = (_cw.view(1, T+1, 1) * (_xs[..., 0:2].reshape(N*(T+1), 2) - pref.reshape(-1)).square()).mean()
+    # loss_control = us.square().mean()
+    loss_safe = (torch.nn.functional.relu(-_bs)).square().mean()
+    loss_policy: Tensor = w1*loss_obj + w2*loss_safe
+
+    # step2: dynamic training
+    xpreds = dynamic.forward(_taus, dict()) # (N, nx)
+    loss_dynamic: Tensor = (xpreds - _xnexts).square().mean()
+    return loss_policy, loss_dynamic
 
 def main():
     # basic environment set
@@ -211,14 +245,14 @@ def main():
     ntau = nx + nu
     nl = T * nu
     # build mpc-cbf solver
-    cost      = TvToCost(nx, nu, T).to(device, dtype)
-    dynamic   = TvToDynamic(nx, nu, T, delta_t).to(device, dtype)
-    barrier   = TvToBarrier(nx, nu, T, nb).to(device, dtype)
+    cost      = TvToCost(nx, nu, nb, T, device, dtype)
+    dynamic   = TvToDynamic(nx, nu, T, device, dtype, delta_t)
+    barrier   = TvToBarrier(nx, nu, nb, T, device, dtype)
 
     umin      = torch.tensor([-1.0, -1.0], device=device, dtype=dtype)
     umax      = torch.tensor([1.0, 1.0], device=device, dtype=dtype)
     p0        = torch.tensor([[0.], [0.]], device=device, dtype=dtype, requires_grad=True)
-    pref      = torch.tensor([[1.], [1.]], device=device, dtype=dtype, requires_grad=True)
+    pref      = torch.tensor([[1.], [1.]], device=device, dtype=dtype, requires_grad=True) # (2, 1)
     gamma: float = 0.2
 
     mpc = DiffMPCBF(
@@ -245,12 +279,7 @@ def main():
     ls_train= train(
         env,
         mpc,
-        barrier,
         pref,
-        nx,
-        nu,
-        nb,
-        T,
         gamma,
         N,
         num_epoch=100,
