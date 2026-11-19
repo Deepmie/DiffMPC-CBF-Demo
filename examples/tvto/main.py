@@ -116,6 +116,9 @@ def train(
         loss_dynamic.backward()
         opt_dynamic.step()
 
+        # finally
+        _zeta = _zeta.detach()
+        _zetav = _zeta.view((T+1) * nv)
 
         # record loss
         with open('./log/train.txt', mode='a', encoding='utf-8') as writer:
