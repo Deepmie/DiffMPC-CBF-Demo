@@ -8,7 +8,7 @@
             "name": "MainDebugger",
             "type": "debugpy",
             "request": "launch",
-            "program": "./examples/tvto/main.py",
+            "program": "./examples/highway/main.py",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}"
         },
