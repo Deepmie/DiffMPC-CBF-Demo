@@ -123,8 +123,7 @@ class MetaDriveBarrier(Barrier):
             dtype: torch.dtype,
             L: float,
             W: float,
-            ymin: float,
-            ymax: float,
+            eps: float,
         ):
         '''
         Extra Arguments:
@@ -136,8 +135,7 @@ class MetaDriveBarrier(Barrier):
         super().__init__(nx, nu, nb, T, device, dtype)
         self._L = L
         self._W = W
-        self._ymin = ymin
-        self._ymax = ymax
+        self._eps = eps
         self.dlt_net = DeltaNetwork(4).to(device, dtype)
         self._nh = self._nb - 2
 
@@ -146,41 +144,61 @@ class MetaDriveBarrier(Barrier):
         Arguments:
             - x[T, nx]: current state
             - params:
-              other vehicle position, (nh, 2), [[px1, px2, ...], [py1, py2, ...]]
+              other vehicle position, (T+1, nh, 2)
+              pref: (T+1, 2)
+              psiref: (T+1, 1)
         Returns:
             - Next State[T, nb]: the next state sequence of T+1 element
         '''
         p, psi, v = x[:, 0:2], x[:, 2:3], x[:, 3:4]
-        t: Tensor = params.get('t')
-        pvc: Tensor = params.get('vehicle_position') # (T+1, nh, 2)
-        pref: Tensor = params.get('pref') # (T+1, 2)
+        t: Tensor      = params.get('t')
+        pvc: Tensor    = params.get('vehicle_position') # (T+1, nh, 2)
+        psivc: Tensor  = params.get('vehicle_heading') # (T+1, nh, 1)
+        lenvc: Tensor  = params.get('vehicle_length') # (nh, )
+        widvc: Tensor  = params.get('vehicle_width') # (nh, )
+        maskvc: Tensor = params.get('vehicle_mask') # (nh, ) or None
+        pref: Tensor   = params.get('pref') # (T+1, 2)
         psiref: Tensor = params.get('psiref') # (T+1, 1)
+        n_left: Tensor = params.get('n_left') # (T+1, 1)
+        n_right: Tensor = params.get('n_right') # (T+1, 1)
         
         t_batch = t.unsqueeze(1).expand(-1, self._nh).unsqueeze(-1) # (T+1, nh, 1)
 
         # vehicle cbf
-        psi_cos = torch.cos(psi) # (T+1, 1)
-        psi_sin = torch.sin(psi) # (T+1, 1)
+        psi_cos, psi_sin = torch.cos(psi), torch.sin(psi) # (T+1, 1)
         R = torch.concat([
             torch.concat([ psi_cos, psi_sin], dim=-1).unsqueeze(1), # (T+1, 1, 2)
             torch.concat([-psi_sin, psi_cos], dim=-1).unsqueeze(1), # (T+1, 1, 2)
         ], dim=1) # (T+1, 2, 2)
-        dp = pvc[t, ...] - p.view(t.shape[0], 1, 2) # (T+1, nh, 2)
-        d = (R.unsqueeze(1) @ dp.unsqueeze(-1)).squeeze(-1) # (T+1, nh, 2)
-        dx, dy = d[..., 0], d[..., 1] # (T+1, nh)
+        # p
+        p_delta = pvc[t, ...] - p.view(t.shape[0], 1, 2) # (T+1, nh, 2)
+        p_delta_r = (R.unsqueeze(1) @ p_delta.unsqueeze(-1)).squeeze(-1) # (T+1, nh, 2)
+        x_delta, y_delta = p_delta_r[..., 0], p_delta_r[..., 1] # (T+1, nh)
+        # psi
+        psi_delta = psivc[t, ...] - psi.view(t.shape[0], 1, 1) # (T+1, nh, 1)
+        c_rel = torch.sqrt(psi_delta.cos().square() + self._eps).squeeze(-1) # (T+1, nh)
+        s_rel = torch.sqrt(psi_delta.sin().square() + self._eps).squeeze(-1) # (T+1, nh)
+        
         ctx = torch.concat([
-            dp, # (T+1, nh, 2)
-            dp.norm(p=2, dim=-1, keepdim=True), # (T+1, nh, 1)
+            p_delta, # (T+1, nh, 2)
+            p_delta.norm(p=2, dim=-1, keepdim=True), # (T+1, nh, 1)
             t_batch, # (T+1, nh, 1)
         ], dim=-1) # (T+1, nh, 4)
         hid: Tensor = self.dlt_net(ctx).squeeze(-1) # (T+1, nh)
-        hvc = (dx / (self._L + hid)).square() + (dy / (self._W + hid)).square() - 1 # (T+1, nh)
+        a = self._L / 2 + c_rel * (lenvc / 2) + s_rel * (widvc / 2) + hid # (T+1, nh)
+        b = self._W / 2 + s_rel * (lenvc / 2) + c_rel * (widvc / 2) + hid # (T+1, nh)
+        hvc = (x_delta / a).square() + (y_delta / b).square() - 1 # (T+1, nh)
+        if maskvc is not None: hvc = maskvc * hvc + (1 - maskvc)
 
         # road cbf
-        c, s = torch.cos(psiref[t]), torch.sin(psiref[t])
-        en = -s * (p[:, 0: 1] - pref[t, 0: 1]) + c * (p[:, 1: 2] - pref[t, 1: 2]) # (T+1, 1)
+        c, s = torch.cos(psiref[t]), torch.sin(psiref[t]) # (T+1, 1)
+        pref_delta = p - pref[t] # (T+1, 2)
+        psiref_delta = psi - psiref[t] # (T+1, 1)
+        en = -s * pref_delta[:, 0: 1] + c * pref_delta[:, 1: 2] # (T+1, 1)
+        epsi = torch.atan2(torch.sin(psiref_delta), torch.cos(psiref_delta)) # (T+1, 1)
+        body = 0.5 * self._L * torch.sqrt(epsi.sin().square() + self._eps) + 0.5 * self._W * torch.sqrt(epsi.cos().square() + self._eps) # (T+1, 1)
         return torch.concat([
             hvc, # (T+1, nh)
-            1 - en, # (T+1, 1)
-            1 + en, # (T+1, 1)
+            n_left[t] - body - en, # (T+1, 1)
+            n_right[t] - body + en, # (T+1, 1)
         ], dim=-1) # (T+1, nh+2)

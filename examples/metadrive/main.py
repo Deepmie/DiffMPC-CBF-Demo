@@ -6,8 +6,13 @@ from torch import Tensor
 from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 from numpy import ndarray
-from env import EnvGenerator
+from env import *
+from transitor import Transitor
 from metadrive.env import MetaDriveEnv
+from metadrive.component.vehicle.vehicle_type import DefaultVehicle
+from metadrive.component.navigation_module.node_network_navigation import NodeNetworkNavigation
+from metadrive.component.road_network.node_road_network import NodeRoadNetwork
+from metadrive.component.lane.pg_lane import PGLane
 from system import *
 from typing import List, Tuple
 from datetime import datetime
@@ -44,6 +49,7 @@ class Trainer:
         ):
         self._env = env
         self._env_eval = env_eval
+
         self._mpc = mpc
         self._delta_t = delta_t
 
@@ -69,6 +75,8 @@ class Trainer:
         self._nv = mpc._nv
         self._vardim = mpc._vardim
         self._eval_nums: int = 0
+        self._transitor = Transitor(self._env, self._T, self._delta_t)
+        self._transitor_eval = Transitor(self._env_eval, self._T, self._delta_t)
         
         if os.path.exists(tensorboard_log_path):
             shutil.rmtree(tensorboard_log_path)
@@ -89,9 +97,10 @@ class Trainer:
             list(self._mpc._dynamic.parameters()),
             lr = self._lr,
         )
+        _vehicle: DefaultVehicle = self._env.agent
 
         for epoch in range(self._num_epoch):
-            obs, info = self._env.reset(); self._seed += 1
+            obs, info = self._env.reset()
             self._mpc.reset()
 
             xs: List[Tensor] = []
@@ -105,13 +114,26 @@ class Trainer:
             # one episode
             for k in range(self._N):
                 # build params
-                vehicle_position = self._predict_vehicle_position()
-                pref, psiref = self._path_planning()
+                vehicle_position, vehicle_heading, vehicle_length, vehicle_width = self._transitor._predict_vehicle_position(self._nobs)
+                pref, psiref, n_left, n_right = self._transitor._path_planning(self._vref)
+                to = self._mpc._tensor
+                vehicle_position, vehicle_heading = to(vehicle_position), to(vehicle_heading)
+                vehicle_length, vehicle_width = to(vehicle_length), to(vehicle_width)
+                pref, psiref, n_left, n_right = to(pref), to(psiref), to(n_left), to(n_right)
+
                 params = {
                     'cost': {'pref': pref, 'psiref': psiref, 'vref': self._vref},
-                    'barrier': {'vehicle_position': vehicle_position, 'gamma': self._gamma, 'pref': pref, 'psiref': psiref},
+                    'barrier': {
+                        'vehicle_position': vehicle_position,
+                        'vehicle_heading': vehicle_heading,
+                        'vehicle_length': vehicle_length,
+                        'vehicle_width': vehicle_width,
+                        'gamma': self._gamma,
+                        'pref': pref, 'psiref': psiref,
+                        'n_left': n_left, 'n_right': n_right,
+                    },
                 }
-                x_curr = torch.as_tensor(self._base.vehicle.state, dtype=self._dtype, device=self._device)
+                x_curr = self._mpc._tensor([_vehicle.position[0], _vehicle.position[1], _vehicle.heading_theta, _vehicle.speed])
                 zeta, sqp_status = self._mpc.forward(x_curr, params)
                 if sqp_status != SQPStatus.CONVERGED: raise RuntimeError(f'SQP solve failed. Reason: {sqp_status}.')
                 
@@ -120,10 +142,10 @@ class Trainer:
                 zeta_full = torch.concat([zeta, pad]).view(self._T+1, self._nv)
 
                 u_env = zeta[self._nx: self._ntau].detach()
-                action: ndarray = (u_env.cpu().numpy() / [5.0, pi/4]).reshape(-1)
+                action: ndarray = self._control_to_action(u_env, _vehicle)
                 obs, reward, terminated, truncated, info = self._env.step(action)
-
-                x_next = torch.as_tensor(self._base.vehicle.state, dtype=self._dtype, device=self._device)
+                
+                x_next = self._mpc._tensor([_vehicle.position[0], _vehicle.position[1], _vehicle.heading_theta, _vehicle.speed])
 
                 # collect traning data
                 xs.append(zeta_full[:, :self._nx]) # (T+1, nx)
@@ -137,7 +159,7 @@ class Trainer:
                 psirefs.append(psiref)
 
                 if terminated or truncated:
-                    obs, info = self._env.reset(); self._seed += 1
+                    obs, info = self._env.reset()
                     self._mpc.reset()
 
             _xs = torch.stack(xs) # (N, T+1, nx)
@@ -234,7 +256,7 @@ class Trainer:
             pad = zeta.new_zeros((self._T+1) * self._nv - self._vardim)
             zeta_full = torch.concat([zeta, pad]).view(self._T+1, self._nv)
 
-            u_env = zeta[self._nx: self._ntau].detach()
+            u_env = zeta[self._nx: self._ntau].detach
             action: ndarray = (u_env.cpu().numpy() / [5.0, pi/4]).reshape(-1)
             obs, reward, terminated, truncated, info = self._env_eval.step(action)
 
@@ -295,56 +317,6 @@ class Trainer:
         lstot = lsply + lsdym
         return lstot, lsply, lsdym
 
-    def _predict_vehicle_position(self, base: MetaDriveEnv) -> Tensor:
-        src = base.road
-        ego_idx: int = src.vehicles.index(base.vehicle)
-        road = deepcopy(src)
-        ego = road.vehicles[ego_idx]
-        ego.act({'acceleration': 0.0, 'steering': 0.0})
-        others = [i for i in range(len(road.vehicles)) if i != ego_idx]
-        others.sort(key=lambda i: np.linalg.norm(road.vehicles[i].position - ego.position, ord=2))
-        chosen = others[:self._nobs]
-        pos = 1e-3 * np.ones([self._T+1, self._nobs, 2])
-        for k in range(self._T+1):
-            for j, i in enumerate(chosen):
-                pos[k, j] = road.vehicles[i].position
-
-            if k == self._T:
-                break
-
-            road.act()
-            road.step(self._delta_t)
-        return torch.as_tensor(pos, dtype=self._dtype, device=self._device)
-
-    def _path_planning(self, base: MetaDriveEnv) -> Tuple[Tensor, Tensor]:
-        vehicle = base.vehicle
-        destination = base.config.get('destination')
-
-        # get lane
-        road = vehicle.road
-        lane_index = vehicle.lane_index
-
-        path = road.network.shortest_path(lane_index[1], destination)
-        route = [lane_index] + [
-            (path[i], path[i + 1], 0) for i in range(len(path) - 1)
-        ]
-        lanes = [road.network.get_lane(idx) for idx in route]
-        s, _ = vehicle.lane.local_coordinates(vehicle.position)
-        lane_i = 0
-        pref = np.zeros([self._T+1, 2])
-        psiref = np.zeros([self._T+1, 1])
-        for i in range(self._T+1):
-            lane = lanes[lane_i]
-            while s > lane.length and lane_i + 1 < len(lanes):
-                s -= lane.length
-                lane_i += 1
-                lane = lanes[lane_i]
-            s_clip = min(max(s, 0.0), lane.length)
-            pref[i] = lane.position(s_clip, 0.0)
-            psiref[i] = float(lane.heading_at(s_clip))
-            s += self._vref * self._delta_t
-        return self._mpc._tensor(pref), self._mpc._tensor(psiref)
-
     def _get_lateral_error(self, xs: Tensor, prefs: Tensor, psirefs: Tensor) -> Tuple[Tensor, Tensor, Tensor]:
         '''
         Argument:
@@ -363,6 +335,20 @@ class Trainer:
         en = -s * p_delta[..., 0: 1] + c * p_delta[..., 1: 2] # (N, T+1, 1)
         epsi = torch.atan2(torch.sin(psi - psirefs), torch.cos(psi - psirefs)) # (N, T+1, 1)
         return es, en, epsi
+
+    def _control_to_action(self, control: Tensor, vehicle: DefaultVehicle) -> ndarray: # (2, )
+        a, delta = control.cpu().numpy()
+        mass = vehicle.MASS
+        f_engine: float = vehicle.config['max_engine_force']
+        f_brake: float = vehicle.config['max_brake_force']
+        s_max = np.deg2rad(float(vehicle.max_steering))
+        steer = np.clip(delta / s_max, -1.0, 1.0)
+        if a >= 0.0:
+            throttle = np.clip(mass * a / (4.0 * f_engine), 0.0, 1.0)
+        else:
+            throttle = np.clip(mass * a / (4.0 * f_brake), -1.0, 0.0)
+        return np.array([steer, throttle]) # (2, )
+
 
     @property
     def _timenow(self) -> str: return datetime.now().strftime('%H:%M:%S')
@@ -398,13 +384,10 @@ def main():
     W: float = 2.0
     ymin: float = -2.0
     ymax: float = 14.0
-    delta_t: float = 1 / 15
+    delta_t: float = 5 * 0.02
 
-
-    env_generator = EnvGenerator()
-    env_generator_eval = EnvGenerator()
-    env = env_generator.env
-    env_eval = env_generator_eval.env
+    env = create_env(seed)
+    env_eval = create_env(seed)
     cost    = MetaDriveCost(nx, nu, nb, T, device, dtype, vref, yref)
     dynamic = MetaDriveDynamic(nx, nu, T,device, dtype, L, delta_t)
     barrier = MetaDriveBarrier(nx, nu, nb, T, device, dtype, L, W, ymin, ymax)

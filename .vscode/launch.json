@@ -8,7 +8,7 @@
             "name": "MainDebugger",
             "type": "debugpy",
             "request": "launch",
-            "program": "./examples/intersection/main.py",
+            "program": "./examples/metadrive/main.py",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}"
         },
@@ -16,7 +16,7 @@
             "name": "RRDebugger",
             "type": "debugpy",
             "request": "launch",
-            "program": "./examples/intersection/test_route_reference.py",
+            "program": "./examples/metadrive/test_other_vehicle.py",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}"
         }
