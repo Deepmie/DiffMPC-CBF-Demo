@@ -1,6 +1,7 @@
 {
     "python.analysis.extraPaths": [
         "${workspaceFolder}/thirdparty/qpth",
-        "${workspaceFolder}/thirdparty/HighwayEnv"
+        "${workspaceFolder}/thirdparty/HighwayEnv",
+        "${workspaceFolder}/thirdparty/metadrive",
     ]
 }

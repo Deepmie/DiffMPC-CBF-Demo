@@ -3,6 +3,7 @@ from diffmpc_cbf.utils import *
 from diffmpc_cbf.base import SQPStatus
 import torch
 from torch import Tensor
+from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 from numpy import ndarray
 import gymnasium as gym
@@ -19,12 +20,14 @@ import os
 from copy import deepcopy
 from math import pi
 from PIL import Image
+from PIL.Image import Image as PILImage
 gym.register_envs(highway_env)
 
 class Trainer:
     def __init__(
             self,
             env: Env,
+            env_eval: Env,
             mpc: DiffMPCBF,
             delta_t: float,
             N: int,
@@ -36,11 +39,16 @@ class Trainer:
             gamma: float,
             dtype: torch.dtype,
             device: torch.device,
+            seed: int,
             train_log_path: str = './log/train.txt',
+            tensorboard_log_path: str = './log/exp',
+            eval_gif_path: str = './log/eval',
 
         ):
         self._env = env
+        self._env_eval = env_eval
         self._base: HighwayEnv = env.unwrapped
+        self._base_eval: HighwayEnv = env_eval.unwrapped
         self._mpc = mpc
         self._delta_t = delta_t
 
@@ -54,7 +62,9 @@ class Trainer:
         self._gamma = gamma
         self._dtype = dtype
         self._device = device
+        self._seed = seed
         self._train_log_path = train_log_path
+        self._eval_gif_path = eval_gif_path
         self._nx = mpc._nx
         self._nu = mpc._nu
         self._nb = mpc._nb
@@ -63,6 +73,8 @@ class Trainer:
         self._ntau = mpc._ntau
         self._nv = mpc._nv
         self._vardim = mpc._vardim
+        self._eval_nums: int = 0
+        self._writer = SummaryWriter(log_dir=tensorboard_log_path)
 
     def train(self):
         _zeta = self._mpc._zeros((self._T+1), self._nv)
@@ -80,12 +92,9 @@ class Trainer:
             list(self._mpc._dynamic.parameters()),
             lr = self._lr,
         )
-        loss_list: List[float] = []
-        evaluate_num: int = 0
-        start = time.time()
 
         for epoch in range(self._num_epoch):
-            obs, info = self._env.reset()
+            obs, info = self._env.reset(seed=self._seed)
             self._mpc.reset()
 
             xs: List[Tensor] = []
@@ -98,14 +107,14 @@ class Trainer:
             for k in range(self._N):
                 # build params
                 params = {
-                    'barrier': {'vehicle_position': self._predict_vehicle_position(), 'gamma': self._gamma},
+                    'barrier': {'vehicle_position': self._predict_vehicle_position(self._base), 'gamma': self._gamma},
                 }
                 x_curr = torch.as_tensor(self._base.vehicle.state, dtype=self._dtype, device=self._device)
                 zeta, sqp_status = self._mpc.forward(x_curr, params)
-                if sqp_status != SQPStatus.CONVERGED: raise RuntimeError(f'SQP solve failed.')
+                if sqp_status != SQPStatus.CONVERGED: raise RuntimeError(f'SQP solve failed. Reason: {sqp_status}.')
 
                 u_env = zeta[self._nx: self._ntau].detach()
-                action: ndarray = (u_env.cpu().numpy() / [5.0, pi/4]).reshape(-1, 1)
+                action: ndarray = (u_env.cpu().numpy() / [5.0, pi/4]).reshape(-1)
                 obs, reward, terminated, truncated, info = self._env.step(action)
 
                 x_next = torch.as_tensor(self._base.vehicle.state, dtype=self._dtype, device=self._device)
@@ -121,7 +130,7 @@ class Trainer:
                 xnexts.append(x_next)
 
                 if terminated or truncated:
-                    obs, info = self._env.reset()
+                    obs, info = self._env.reset(seed=self._seed+epoch)
                     self._mpc.reset()
 
             _xs = torch.stack(xs) # (N, T+1, nx)
@@ -159,10 +168,114 @@ class Trainer:
             with open('./log/train.txt', mode='a', encoding='utf-8') as writer:
                 writer.write(f'[{self._timenow}] Epoch: {epoch}, policy: {loss_policy:4f} (obj: {loss_obj:4f}, safe: {loss_safe:4f}), dynamic: {loss_dynamic:4f}\n')
 
+            if (epoch+1) % 1 == 0:
+                self.eval()
+                self._eval_nums += 1
 
-    def _predict_vehicle_position(self) -> Tensor:
-        src = self._base.road
-        ego_idx: int = src.vehicles.index(self._base.vehicle)
+            lsply = loss_policy.item()
+            lsdym = loss_dynamic.item()
+            lstot = lsply + lsdym
+            self._writer.add_scalars(
+                'loss',
+                {
+                    'total': lstot,
+                    'policy': lsply,
+                    'dynamic': lsdym,
+                },
+                epoch,
+            )
+
+        self._writer.close()
+
+    def eval(self):
+        _zeta = self._mpc._zeros((self._T+1), self._nv)
+        _zetav = _zeta.view((self._T+1) * self._nv)
+        _cw = self._mpc._ones(self._T+1); _cw[-1] = 10.0
+        w1, w2 = self._loss_weight
+
+        obs, info = self._env_eval.reset(seed=self._seed)
+        self._mpc.reset()
+
+        xs: List[Tensor] = []
+        us: List[Tensor] = []
+        bs: List[Tensor] = []
+        xcurrs: List[Tensor] = []
+        xnexts: List[Tensor] = []
+        frames: List[PILImage] = []
+
+        # one episode
+        for k in range(self._N):
+            # build params
+            params = {
+                'barrier': {'vehicle_position': self._predict_vehicle_position(self._base_eval), 'gamma': self._gamma},
+            }
+            x_curr = torch.as_tensor(self._base_eval.vehicle.state, dtype=self._dtype, device=self._device)
+            zeta, sqp_status = self._mpc.forward(x_curr, params)
+            if sqp_status != SQPStatus.CONVERGED: raise RuntimeError(f'SQP solve failed. Reason: {sqp_status}.')
+
+            u_env = zeta[self._nx: self._ntau].detach()
+            action: ndarray = (u_env.cpu().numpy() / [5.0, pi/4]).reshape(-1)
+            obs, reward, terminated, truncated, info = self._env_eval.step(action)
+
+            x_next = torch.as_tensor(self._base_eval.vehicle.state, dtype=self._dtype, device=self._device)
+
+            # collect traning data
+            _zetav[:self._vardim] = zeta
+            xs.append(_zeta[:, :self._nx].clone()) # (T+1, nx)
+            us.append(u_env) # (nu, )
+            bs.append(
+                self._mpc._barrier.forward(zeta[self._nv: self._nv+self._nx].unsqueeze(0), self._mpc.tcon(params['barrier'], 1)).flatten()
+            ) # (nb, )
+            xcurrs.append(x_curr) # (nx, )
+            xnexts.append(x_next)
+
+            # render
+            frame = self._env_eval.render()
+            frames.append(Image.fromarray(frame))
+
+            if terminated or truncated:
+                break
+
+        _xs = torch.stack(xs) # (N, T+1, nx)
+        _us = torch.stack(us) # (N, nu)
+        _bs = torch.stack(bs) # (N, nb)
+        _xcurrs = torch.stack(xcurrs) # (N, nx)
+        _xnexts = torch.stack(xnexts) # (N, nx)
+        _taus = torch.concat([_xcurrs, _us], dim=-1) # (N, ntau)
+
+        # step1: policy training
+        loss_obj = (_cw.view(1, self._T+1) * ((_xs[..., 3].reshape(-1) - self._vref).square() + \
+        (_xs[..., 1].reshape(-1) - self._yref).square() + \
+        _xs[..., 2].reshape(-1).square()).reshape(self._N, self._T+1)).mean()
+        # loss_control = us.square().mean()
+        loss_safe = (torch.nn.functional.relu(-_bs)).square().mean()
+        loss_policy: Tensor = w1*loss_obj + w2*loss_safe
+
+        # step2: dynamic training
+        xpreds = self._mpc._dynamic.forward(_taus, dict()) # (N, nx)
+        loss_dynamic: Tensor = (xpreds - _xnexts).square().mean()
+
+        # finally
+        _zeta = _zeta.detach()
+        _zetav = _zeta.view((self._T+1) * self._nv)
+
+        if frames:
+            frames[0].save(
+                os.path.join(self._eval_gif_path, f'eval{self._eval_nums}.gif'),
+                save_all      = True,
+                append_images = frames[1:],
+                duration      = int(self._delta_t * 1000),
+                loop          = 0,
+            )
+
+        lsply = loss_policy.item()
+        lsdym = loss_dynamic.item()
+        lstot = lsply + lsdym
+        return lstot, lsply, lsdym
+
+    def _predict_vehicle_position(self, base: HighwayEnv) -> Tensor:
+        src = base.road
+        ego_idx: int = src.vehicles.index(base.vehicle)
         road = deepcopy(src)
         ego = road.vehicles[ego_idx]
         ego.act({'acceleration': 0.0, 'steering': 0.0})
@@ -218,12 +331,22 @@ def main():
     delta_t: float = 1 / 15
 
     env = gym.make(
-        'highway-fast-v0',
+        # 'highway-fast-v0',
+        'intersection-v2',
         config = {
             'action': {'type': 'ContinuousAction'},
             'simulation_frequency': 15,
             'policy_frequency': 15,
         },
+    )
+    env_eval = gym.make(
+        'intersection-v2',
+        config = {
+            'action': {'type': 'ContinuousAction'},
+            'simulation_frequency': 15,
+            'policy_frequency': 15,
+        },
+        render_mode='rgb_array',
     )
     cost    = HighwayCost(nx, nu, nb, T, device, dtype, vref, yref)
     dynamic = HighwayDynamic(nx, nu, T,device, dtype, L, delta_t)
@@ -244,22 +367,25 @@ def main():
         dtype      = dtype,
     )
     mpc.to(device)
-    env.reset()
     trainer = Trainer(
-        env=env,
-        mpc=mpc,
-        delta_t=delta_t,
-        N=80,
-        num_epoch=100,
-        lr=5e-4,
-        loss_weight=[1.0, 1e4],
-        vref=vref,
-        yref=yref,
-        gamma=0.2,
-        dtype=dtype,
-        device=device,
+        env = env,
+        env_eval = env_eval,
+        mpc = mpc,
+        delta_t = delta_t,
+        N = 80,
+        num_epoch = 100,
+        lr = 5e-4,
+        loss_weight = [1.0, 1e4],
+        vref = vref,
+        yref = yref,
+        gamma = 0.2,
+        dtype = dtype,
+        device = device,
+        seed = seed,
     )
-    trainer.train()
+    # trainer.train()
+    lstot_el, lsply_el, lsdym_el = trainer.eval()
+    print(f'total: {lstot_el}, policy: {lsply_el}, dynamic: {lsdym_el}')
 
 
 if __name__ == '__main__':

@@ -52,7 +52,7 @@ class HighwayCost(Cost):
             psi.square(),
             a.square() + delta.square(),
         ], dim=-1) # (T+1, 4)
-        return 0.5 * self.w * hid * x
+        return 0.5 * (self.w * hid * x).sum(dim=-1, keepdim=True) + 0.5e-3 * (px - px.detach()).square()
 
     def _buffer_matrix(self):
         _w: Tensor = torch.ones(self._T+1, 4, device=self._device, dtype=self._dtype)
@@ -91,7 +91,7 @@ class HighwayDynamic(Dynamic):
         px, py, psi, v, a, delta = [tau[:, i:i+1] for i in range(self._ntau)]
         res: Tensor = self.res_net(tau) # (T, nu)
         a_eff = a + self._eps * res[:, 0:1] # (T, 1)
-        delta_eff = delta + self._eps * res[:, 0:1] # (T, 1)
+        delta_eff = delta + self._eps * res[:, 1:2] # (T, 1)
         beta_eff = torch.arctan(0.5 * torch.tan(delta_eff)) # (T, 1)
         return torch.concat([
             px + self._delta_t * v * torch.cos(psi + beta_eff),

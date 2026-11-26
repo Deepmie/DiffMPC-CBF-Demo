@@ -1,0 +1,30 @@
+QP solve failed. Var Tables:
+phase: 0 epoch: 5 k: 182 seed: 54
+r_eq: 1.166e-15
+r_neq: 0.000e+00
+stat: 1.425e-05
+r_dv: 0.000e+00
+r_cp: 1.208e+02
+mu_mean: 6.889e-01  n_above_1e-4: 210/210
+Q eig: 1.010e-01 .. 2.265e+01
+G row norm: 1.000e+00 .. 1.360e+03
+h: min 1.000e-03 max 1.786e+02 n_neg 0
+top complementarity:
+  t=0 umax[0] prod=1.208e+02 lam=1.211e+01 slack=9.979e+00
+  t=14 slack[3] prod=1.307e-01 lam=9.456e+00 slack=1.383e-02
+  t=13 slack[3] prod=1.275e-01 lam=9.544e+00 slack=1.336e-02
+  t=12 slack[3] prod=1.257e-01 lam=9.595e+00 slack=1.310e-02
+  t=5 slack[4] prod=1.254e-01 lam=9.555e+00 slack=1.312e-02
+  t=6 slack[4] prod=1.253e-01 lam=9.556e+00 slack=1.312e-02
+  t=4 slack[4] prod=1.252e-01 lam=9.558e+00 slack=1.310e-02
+  t=7 slack[4] prod=1.251e-01 lam=9.561e+00 slack=1.308e-02
+  t=3 slack[4] prod=1.250e-01 lam=9.561e+00 slack=1.308e-02
+  t=2 slack[4] prod=1.248e-01 lam=9.565e+00 slack=1.305e-02
+  t=0 slack[4] prod=1.247e-01 lam=9.586e+00 slack=1.300e-02
+  t=1 slack[4] prod=1.246e-01 lam=9.569e+00 slack=1.303e-02
+retries on the same QP:
+  iters200: r_eq=1.499e-15 r_neq=0.000e+00 stat=3.553e-15 r_dv=0.000e+00 r_cp=1.208e+02 mu=6.882e-01
+  row200: r_eq=6.939e-18 r_neq=0.000e+00 stat=1.776e-15 r_dv=0.000e+00 r_cp=8.619e-15 mu=2.242e-15
+  rowvar200: r_eq=6.939e-18 r_neq=0.000e+00 stat=3.553e-15 r_dv=0.000e+00 r_cp=4.529e-13 mu=7.971e-14
+  reg1: r_eq=3.469e-18 r_neq=0.000e+00 stat=2.294e-02 r_dv=0.000e+00 r_cp=2.693e-14 mu=4.614e-15
+  reg1_row: r_eq=5.204e-18 r_neq=0.000e+00 stat=2.294e-02 r_dv=0.000e+00 r_cp=8.544e-15 mu=2.572e-15

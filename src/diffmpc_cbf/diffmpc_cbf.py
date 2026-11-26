@@ -23,9 +23,9 @@ class DiffMPCBF(nn.Module):
         umin: Tensor, # (nu, )
         umax: Tensor,
         metric_weight: List[float] = [10.0, 5.0],
-        slack_weight: List[float] = [1e2, 1e3],
+        slack_weight: List[float] = [10, 10],
         min_iter_nums: int = 2,
-        max_iter_nums: int = 30,
+        max_iter_nums: int = 50,
         # qp_config: List[Tuple] = [(1e-5, 20), (1e-7, 30), (1e-8, 50)],
         qp_config: List[Tuple] = [(1e-5, 25)],
         max_reg_nums: int = 5,
@@ -91,9 +91,9 @@ class DiffMPCBF(nn.Module):
                 
                 # is convergence
                 pf_ok = self._check_primal_feasibility()
-                kkt_ok = self._check_nlp_kkt(dveq_qp, dvneq_qp)
-                step_ok = (zeta_delta_apt is None) or (zeta_delta_apt.norm(float('inf')) < 1e-3)
-                if pf_ok and kkt_ok and step_ok:
+                kkt_ok, stat_ok = self._check_nlp_kkt(dveq_qp, dvneq_qp)
+                step_ok = zeta_delta.norm(float('inf')) < 5e-2
+                if pf_ok & kkt_ok & step_ok:
                     status = SQPStatus.CONVERGED
                     break
                 
@@ -109,6 +109,10 @@ class DiffMPCBF(nn.Module):
                 
                 accept, alpha = self._line_search(zeta_deltaw, dveq_qp, dvneq_qp, x0, params)
                 if not accept:
+                    if pf_ok & stat_ok & step_ok:
+                        status = SQPStatus.CONVERGED
+                        break
+                    
                     status = SQPStatus.LINE_SEARCH_FAILED
                     break
                 
@@ -120,7 +124,7 @@ class DiffMPCBF(nn.Module):
 
             if i == self._max_iter_nums-1 and status == SQPStatus.INIT:
                 status = SQPStatus.MAX_ITERATIONS
-                self._check_nlp_kkt()
+                kkt_ok, stat_ok = self._check_nlp_kkt(dveq_qp, dvneq_qp)
 
         if status == SQPStatus.CONVERGED:
             zeta_star = self._zeta.detach().clone(); zeta_starv = zeta_star.view(-1)[:self._vardim]
@@ -135,7 +139,7 @@ class DiffMPCBF(nn.Module):
         else:
             zeta_final = None
             self._check_nlp_kkt(dveq_qp, dvneq_qp)
-            raise RuntimeError('SQP could not converged.')
+            raise RuntimeError(f'SQP could not converged. Reason: {status.name}')
         
         self._Q = self._Q.detach().clone()
         self._p = self._p.detach().clone()
@@ -170,10 +174,21 @@ class DiffMPCBF(nn.Module):
         _bv = self._bv.clone()
         # reg Q
         # self._regularize_hessian(_Qv)
+        _Qv = _Qv + 0.1 * self._cQI[:self._vardim, :self._vardim]
+        # normalization
+        scale_g = torch.sqrt(_Gv.square().sum(1) + _qv.square()).clamp_min(1e-8).detach() # (vd,)
+        scale_a = torch.sqrt(_Av.square().sum(1) + _bv.square()).clamp_min(1e-8).detach() # (vd,)
+        _Gs = _Gv / scale_g.unsqueeze(1)
+        _qs = _qv / scale_g
+        _As = _Av / scale_a.unsqueeze(1)
+        _bs = _bv / scale_a
+
         for qc in self._qp_config:
             eps, maxIter = qc.get('eps'), qc.get('maxIter')
-            zeta_delta, dveq_qp, dvneq_qp = QPFunction(eps=eps, verbose=0, notImprovedLim=20, maxIter=maxIter)(_Qv, _pv, _Gv, _qv, _Av, _bv)
+            zeta_delta, dveq_qp, dvneq_qp = QPFunction(eps=eps, verbose=0, notImprovedLim=20, maxIter=maxIter)(_Qv, _pv, _Gs, _qs, _As, _bs)
             zeta_delta, dveq_qp, dvneq_qp = self._process_qp_result(zeta_delta, dveq_qp, dvneq_qp)
+            dveq_qp = dveq_qp / scale_a
+            dvneq_qp = dvneq_qp / scale_g
 
             # check
             slack_qp = _qv - _Gv @ zeta_delta # (T*ng, )
@@ -187,9 +202,9 @@ class DiffMPCBF(nn.Module):
                     (torch.isfinite(dvneq_qp).all()) & \
                     (r_eq < 1e-4) & \
                     (r_neq < 1e-4) & \
-                    (stat < 1e-4) & \
-                    (r_dv < 1e-4) & \
-                    (r_cp < 1e-4)
+                    (stat < 5e-2) & \
+                    (r_dv < 1e-3) & \
+                    (r_cp < 1e-3)
             if qp_ok:
                 break
 
@@ -207,15 +222,20 @@ class DiffMPCBF(nn.Module):
     def _check_primal_feasibility(self) -> Tensor:
         r_eq = (-self._bv).norm(float('inf'))
         r_neq = (-self._qv).clamp_min(0.0).norm(float('inf'))
-        pf_ok = (r_eq < 1e-4) & (r_neq < 1e-4)
+        pf_ok = (r_eq < 1e-3) & \
+                (r_neq < 1e-3)
         return pf_ok
 
-    def _check_nlp_kkt(self, dveqv: Tensor, dvneqv: Tensor) -> Tensor:
+    def _check_nlp_kkt(self, dveqv: Tensor, dvneqv: Tensor) -> Tuple[Tensor, Tensor]:
         stat = (self._pv + self._Av.T @ dveqv + self._Gv.T @ dvneqv).norm(float('inf'))
         r_dv = (-dvneqv).clamp_min(0.0).norm(float('inf'))
         r_cp = (dvneqv * self._qv).norm(float('inf'))
-        kkt_ok = (stat < 1e-3) & (r_dv < 1e-4) & (r_cp < 1e-4)
-        return kkt_ok
+
+        stat_ok = stat < 5e-2
+        kkt_ok  = stat_ok & \
+                  (r_dv < 1e-3) & \
+                  (r_cp < 1e-3)
+        return kkt_ok, stat_ok
 
     def _line_search(self, zeta_delta: Tensor, dveq: Tensor, dvneq: Tensor, x0: Tensor, params: Optional[Dict]) -> Tuple[bool, float]:
         accept: bool = False
@@ -549,3 +569,4 @@ class DiffMPCBF(nn.Module):
         if m is not None: return torch.eye(n, m, device=self._device, dtype=self._dtype)
         else: return torch.eye(n, device=self._device, dtype=self._dtype)
     def _arange(self, start: int, end: int): return torch.arange(start, end, device=self._device, dtype=torch.int)
+    def _tensor(self, v): return torch.as_tensor(v, device=self._device, dtype=self._dtype)

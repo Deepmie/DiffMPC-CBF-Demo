@@ -1,0 +1,2 @@
+[12:07:01] Start to record
+[12:08:16] Epoch: 0, policy: 0.031506 (obj: 0.029333, safe: 0.002173), dynamic: 0.000447

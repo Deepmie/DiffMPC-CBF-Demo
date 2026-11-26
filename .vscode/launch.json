@@ -8,15 +8,15 @@
             "name": "MainDebugger",
             "type": "debugpy",
             "request": "launch",
-            "program": "./examples/highway/main.py",
+            "program": "./examples/intersection/main.py",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}"
         },
         {
-            "name": "RefDebugger",
+            "name": "RRDebugger",
             "type": "debugpy",
             "request": "launch",
-            "program": "./examples/lc_ex/ref.py",
+            "program": "./examples/intersection/test_route_reference.py",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}"
         }
