@@ -159,8 +159,8 @@ class MetaDriveBarrier(Barrier):
         maskvc: Tensor = params.get('vehicle_mask') # (nh, ) or None
         pref: Tensor   = params.get('pref') # (T+1, 2)
         psiref: Tensor = params.get('psiref') # (T+1, 1)
-        n_left: Tensor = params.get('n_left') # (T+1, 1)
-        n_right: Tensor = params.get('n_right') # (T+1, 1)
+        nleft: Tensor = params.get('n_left') # (T+1, 1)
+        nright: Tensor = params.get('n_right') # (T+1, 1)
         
         t_batch = t.unsqueeze(1).expand(-1, self._nh).unsqueeze(-1) # (T+1, nh, 1)
 
@@ -199,6 +199,6 @@ class MetaDriveBarrier(Barrier):
         body = 0.5 * self._L * torch.sqrt(epsi.sin().square() + self._eps) + 0.5 * self._W * torch.sqrt(epsi.cos().square() + self._eps) # (T+1, 1)
         return torch.concat([
             hvc, # (T+1, nh)
-            n_left[t] - body - en, # (T+1, 1)
-            n_right[t] - body + en, # (T+1, 1)
+            nleft[t] - body - en, # (T+1, 1)
+            nright[t] - body + en, # (T+1, 1)
         ], dim=-1) # (T+1, nh+2)

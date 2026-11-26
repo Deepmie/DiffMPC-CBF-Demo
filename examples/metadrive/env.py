@@ -1,6 +1,7 @@
 from metadrive.envs import MetaDriveEnv
+from metadrive.policy.idm_policy import IDMPolicy
 
-def create_env(seed: int) -> MetaDriveEnv:
+def create_env(seed: int, use_policy: bool=False) -> MetaDriveEnv:
     config = dict(
         num_scenarios           = 1,
         start_seed              = seed,
@@ -18,7 +19,7 @@ def create_env(seed: int) -> MetaDriveEnv:
         crash_object_done       = True,
         horizon                 = 1000,
     )
-
+    if use_policy: config['agent_policy']  = IDMPolicy
     return MetaDriveEnv(config)
 
 

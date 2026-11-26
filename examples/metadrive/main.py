@@ -114,23 +114,20 @@ class Trainer:
             # one episode
             for k in range(self._N):
                 # build params
-                vehicle_position, vehicle_heading, vehicle_length, vehicle_width = self._transitor._predict_vehicle_position(self._nobs)
-                pref, psiref, n_left, n_right = self._transitor._path_planning(self._vref)
-                to = self._mpc._tensor
-                vehicle_position, vehicle_heading = to(vehicle_position), to(vehicle_heading)
-                vehicle_length, vehicle_width = to(vehicle_length), to(vehicle_width)
-                pref, psiref, n_left, n_right = to(pref), to(psiref), to(n_left), to(n_right)
+                pvc, psivc, lenvc, widvc  = self._transitor._predict_traffic_info(self._nobs)
+                pref, psiref, nleft, nright = self._transitor._path_planning(self._vref)
+                pvc, psivc, lenvc, widvc, pref, psiref, nleft, nright = self._np2ts(pvc, psivc, lenvc, widvc, pref, psiref, nleft, nright)
 
                 params = {
                     'cost': {'pref': pref, 'psiref': psiref, 'vref': self._vref},
                     'barrier': {
-                        'vehicle_position': vehicle_position,
-                        'vehicle_heading': vehicle_heading,
-                        'vehicle_length': vehicle_length,
-                        'vehicle_width': vehicle_width,
+                        'vehicle_position': pvc,
+                        'vehicle_heading': psivc,
+                        'vehicle_length': lenvc,
+                        'vehicle_width': widvc,
                         'gamma': self._gamma,
                         'pref': pref, 'psiref': psiref,
-                        'n_left': n_left, 'n_right': n_right,
+                        'n_left': nleft, 'n_right': nright,
                     },
                 }
                 x_curr = self._mpc._tensor([_vehicle.position[0], _vehicle.position[1], _vehicle.heading_theta, _vehicle.speed])
@@ -349,6 +346,8 @@ class Trainer:
             throttle = np.clip(mass * a / (4.0 * f_brake), -1.0, 0.0)
         return np.array([steer, throttle]) # (2, )
 
+    def _np2ts(self, *n: ndarray) -> List[Tensor]:
+        return [self._mpc._tensor(ni) for ni in n]
 
     @property
     def _timenow(self) -> str: return datetime.now().strftime('%H:%M:%S')

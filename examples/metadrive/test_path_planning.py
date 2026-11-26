@@ -14,6 +14,8 @@ from copy import deepcopy
 from pygame import Surface
 import os
 
+ROOT = os.path.dirname(__file__)
+
 def _scalar(value) -> float:
     return float(np.asarray(value).reshape(-1)[0])
 
@@ -59,7 +61,7 @@ def get_frame_withpt(
 
 
 def main(seed=0):
-    env = create_env(seed)
+    env = create_env(seed, use_policy=True)
     T = 15
     delta_t = 0.02 * 5
     vref = 10.0
@@ -69,18 +71,13 @@ def main(seed=0):
     
     frames = []
     for i in range(200):
-        if i <= 80:
-            action = [0.0, 0.5]
-        elif 80 < i <= 95:
-            action = [-0.5, 0.0]
-        else:
-            action = [0.0, 0.0]
-        
-        obs, reward, terminated, truncated, info = env.step(action)
+        obs, reward, terminated, truncated, info = env.step([0.0, 0.0])
         pref, psiref, nleft, nright = transitor._path_planning(vref)
         frames.append(get_frame_withpt(env, pref, psiref, nleft, nright))
+        if terminated or truncated:
+            break
 
-    generate_gif(frames, 'demo.gif')
+    generate_gif(frames, os.path.join(ROOT, 'path_planning.gif'))
     env.close()
     
 

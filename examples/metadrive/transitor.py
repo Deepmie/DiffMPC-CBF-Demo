@@ -23,12 +23,10 @@ class Transitor:
         self._T = T
         self._delta_t = delta_t
 
-    def _pavement(self) -> BaseGeometry:
-        lanes = []
-        for ends in self._env.engine.current_map.road_network.graph.values():
-            for parallel in ends.values():
-                lanes.extend(parallel)
-        return unary_union([lane.shapely_polygon for lane in lanes]).buffer(0.2)
+    def _carriageway(self, lane: PGLane) -> BaseGeometry:
+        start, end = lane.index[0], lane.index[1]
+        parallel = self._env.engine.current_map.road_network.graph[start][end]
+        return unary_union([item.shapely_polygon for item in parallel])
 
     def _clearance(
             self,
@@ -76,7 +74,6 @@ class Transitor:
 
     def _path_planning(self, vref: float) -> Tuple[ndarray, ndarray]:
         lanes = self._route_lanes(self._ego)
-        pavement = self._pavement()
         s, _    = lanes[0].local_coordinates(self._ego.position)
         lane_i  = 0
         pref    = np.zeros([self._T + 1, 2])
@@ -92,6 +89,7 @@ class Transitor:
             s_clip = min(max(s, 0.0), lane.length)
             pref[i] = lane.position(s_clip, 0.0)
             psiref[i, 0] = lane.heading_theta_at(s_clip)
+            pavement = self._carriageway(lane)
             nleft[i, 0], nright[i, 0] = self._clearance(
                 pref[i], psiref[i, 0], pavement, lane.width_at(s_clip) / 2.0,
             )
